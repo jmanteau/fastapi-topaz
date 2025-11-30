@@ -8,8 +8,6 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "src/**"
-    paths-ignore:
-      - "integration-tests/**"
   workflow_dispatch:
 
 permissions:
