@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.envrc
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache
+.dmypy.json
+
+# macOS
+.DS_Store
+
+# Python version
+.python-version
+.ext/
+
+# Integration tests
+integration-tests/webapp/alembic/versions/*.pyc
+integration-tests/topaz-data/
+integration-tests/.env
+integration-tests/.env.oidc
+integration-tests/infra/certs/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+
+# Authentik
+integration-tests/infra/authentik/media/
+integration-tests/infra/authentik/custom-templates/
+integration-tests/infra/authentik/certs/
+
+# Logs
+*.log
+logs/
+
+# Documentation
+site/
+docs/reference/e2e-tests.md
+uv.lock
+.claude/

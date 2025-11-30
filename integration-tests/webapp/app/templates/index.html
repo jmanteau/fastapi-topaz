@@ -1,0 +1,471 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="hero">
+    <h2>Document Management with ABAC</h2>
+    <p>Test fastapi-topaz authorization capabilities with Topaz</p>
+</div>
+
+{% if user %}
+<div class="dashboard" x-data="documentApp()">
+    <div class="section">
+        <h3>My Documents</h3>
+        <button @click="loadDocuments()" class="btn btn-primary">Refresh Documents</button>
+        <button @click="showCreateModal = true" class="btn btn-success">Create Document</button>
+
+        <div class="document-list" x-show="documents.length > 0">
+            <template x-for="doc in documents" :key="doc.id">
+                <div class="document-card">
+                    <div class="card-header">
+                        <h4 x-text="doc.name"></h4>
+                        <div class="card-owner" :title="'Owner: ' + (doc.owner?.email || doc.owner_id)">
+                            <i class="fa-solid fa-user owner-icon"></i>
+                            <span class="owner-label" x-text="doc.owner?.name || doc.owner_id"></span>
+                        </div>
+                    </div>
+                    <div class="card-permissions">
+                        <span class="perm-icon" :class="doc.permissions?.is_owner ? 'perm-active' : 'perm-inactive'" title="Owner"><i class="fa-solid fa-crown"></i></span>
+                        <span class="perm-icon" :class="doc.permissions?.can_read ? 'perm-active' : 'perm-inactive'" title="Can Read"><i class="fa-solid fa-eye"></i></span>
+                        <span class="perm-icon" :class="doc.permissions?.can_write ? 'perm-active' : 'perm-inactive'" title="Can Write"><i class="fa-solid fa-pen"></i></span>
+                        <span class="perm-icon" :class="doc.permissions?.can_delete ? 'perm-active' : 'perm-inactive'" title="Can Delete"><i class="fa-solid fa-trash"></i></span>
+                    </div>
+                    <p class="doc-meta">
+                        <span x-show="doc.is_public" class="badge badge-public">Public</span>
+                        <span x-show="!doc.is_public" class="badge badge-private">Private</span>
+                        <span x-show="doc.shares?.length > 0" class="badge badge-shared" x-text="'Shared (' + doc.shares.length + ')'"></span>
+                    </p>
+                    <div class="doc-actions">
+                        <button @click="viewDocument(doc)" class="btn btn-sm">View</button>
+                        <button @click="editDocument(doc)" class="btn btn-sm btn-secondary" x-show="doc.permissions?.can_write">Edit</button>
+                        <button @click="togglePublic(doc)" class="btn btn-sm" :class="doc.is_public ? 'btn-warning' : 'btn-info'" x-show="doc.permissions?.is_owner">
+                            <i class="fa-solid" :class="doc.is_public ? 'fa-lock' : 'fa-globe'"></i>
+                            <span x-text="doc.is_public ? 'Make Private' : 'Make Public'"></span>
+                        </button>
+                        <button @click="openShareModal(doc)" class="btn btn-sm btn-primary" x-show="doc.permissions?.can_share">
+                            <i class="fa-solid fa-share-nodes"></i> Share
+                        </button>
+                        <button @click="deleteDocument(doc.id)" class="btn btn-sm btn-danger" x-show="doc.permissions?.can_delete">Delete</button>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <div x-show="documents.length === 0">
+            <p>No documents found. Create your first document!</p>
+        </div>
+    </div>
+
+    <!-- Create Document Modal -->
+    <div class="modal" x-show="showCreateModal" @click.outside="showCreateModal = false">
+        <div class="modal-content">
+            <h3>Create New Document</h3>
+            <form @submit.prevent="createDocument()">
+                <div class="form-group">
+                    <label>Document Name</label>
+                    <input type="text" x-model="newDocument.name" required>
+                </div>
+                <div class="form-group">
+                    <label>Content</label>
+                    <textarea x-model="newDocument.content" rows="5"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" x-model="newDocument.is_public">
+                        Make Public
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-success">Create</button>
+                    <button type="button" @click="showCreateModal = false" class="btn">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- View Document Modal -->
+    <div class="modal" x-show="showViewModal" @click.outside="showViewModal = false">
+        <div class="modal-content modal-large">
+            <h3 x-text="selectedDocument?.name"></h3>
+
+            <!-- Owner & Permissions Info -->
+            <div class="doc-info-grid">
+                <div class="info-card">
+                    <h4>Owner</h4>
+                    <div class="owner-info" x-show="selectedDocument?.owner">
+                        <span class="owner-name" x-text="selectedDocument?.owner?.name"></span>
+                        <span class="owner-email" x-text="selectedDocument?.owner?.email"></span>
+                    </div>
+                </div>
+
+                <div class="info-card">
+                    <h4>Your Permissions</h4>
+                    <div class="permissions-list" x-show="documentPermissions">
+                        <span class="perm-badge" :class="documentPermissions?.is_owner ? 'perm-yes' : 'perm-no'">
+                            <template x-if="documentPermissions?.is_owner">Owner</template>
+                            <template x-if="!documentPermissions?.is_owner">Not Owner</template>
+                        </span>
+                        <span class="perm-badge" :class="documentPermissions?.can_read ? 'perm-yes' : 'perm-no'">Read</span>
+                        <span class="perm-badge" :class="documentPermissions?.can_write ? 'perm-yes' : 'perm-no'">Write</span>
+                        <span class="perm-badge" :class="documentPermissions?.can_delete ? 'perm-yes' : 'perm-no'">Delete</span>
+                        <span class="perm-badge" :class="documentPermissions?.can_share ? 'perm-yes' : 'perm-no'">Share</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Shared With -->
+            <div class="info-card" x-show="selectedDocument?.shares?.length > 0">
+                <h4>Shared With</h4>
+                <div class="shares-list">
+                    <template x-for="share in selectedDocument?.shares" :key="share.user.id">
+                        <div class="share-item">
+                            <span class="share-user" x-text="share.user.name"></span>
+                            <span class="share-permission badge" :class="'badge-' + share.permission" x-text="share.permission"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            <div class="info-card" x-show="!selectedDocument?.shares?.length">
+                <h4>Shared With</h4>
+                <p class="text-muted">Not shared with anyone</p>
+            </div>
+
+            <!-- Document Content -->
+            <div class="info-card">
+                <h4>Content</h4>
+                <div class="document-content" x-text="selectedDocument?.content || '(empty)'"></div>
+            </div>
+
+            <button @click="showViewModal = false" class="btn">Close</button>
+        </div>
+    </div>
+
+    <!-- Share Document Modal -->
+    <div class="modal" x-show="showShareModal" @click.outside="showShareModal = false">
+        <div class="modal-content">
+            <h3>Share Document</h3>
+            <p class="text-muted" x-text="'Share \"' + shareDocument?.name + '\" with other users'"></p>
+
+            <!-- Current Shares -->
+            <div class="info-card" x-show="shareDocument?.shares?.length > 0">
+                <h4>Currently Shared With</h4>
+                <div class="shares-list">
+                    <template x-for="share in shareDocument?.shares" :key="share.user.id">
+                        <div class="share-item">
+                            <div class="share-user-info">
+                                <span class="share-user" x-text="share.user.name"></span>
+                                <span class="share-email text-muted" x-text="share.user.email"></span>
+                            </div>
+                            <div class="share-actions">
+                                <span class="badge" :class="'badge-' + share.permission" x-text="share.permission"></span>
+                                <button @click="removeShare(share)" class="btn btn-sm btn-danger" title="Remove share">
+                                    <i class="fa-solid fa-times"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Add New Share -->
+            <div class="info-card">
+                <h4>Add New Share</h4>
+                <form @submit.prevent="createShare()">
+                    <div class="form-group">
+                        <label>Select User</label>
+                        <select x-model="newShare.user_id" required class="form-select">
+                            <option value="">-- Select a user --</option>
+                            <template x-for="user in availableUsers" :key="user.id">
+                                <option :value="user.id" x-text="user.name + ' (' + user.email + ')'"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Permission Level</label>
+                        <div class="permission-options">
+                            <label class="permission-option">
+                                <input type="radio" x-model="newShare.permission" value="read" required>
+                                <span class="permission-label">
+                                    <i class="fa-solid fa-eye"></i> Read
+                                    <small>Can view the document</small>
+                                </span>
+                            </label>
+                            <label class="permission-option">
+                                <input type="radio" x-model="newShare.permission" value="write">
+                                <span class="permission-label">
+                                    <i class="fa-solid fa-pen"></i> Write
+                                    <small>Can view and edit the document</small>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-success" :disabled="!newShare.user_id">
+                            <i class="fa-solid fa-plus"></i> Add Share
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <button @click="showShareModal = false" class="btn">Close</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    function documentApp() {
+        return {
+            documents: [],
+            showCreateModal: false,
+            showViewModal: false,
+            showShareModal: false,
+            selectedDocument: null,
+            shareDocument: null,
+            documentPermissions: null,
+            availableUsers: [],
+            newDocument: {
+                name: '',
+                content: '',
+                is_public: false
+            },
+            newShare: {
+                user_id: '',
+                permission: 'read'
+            },
+
+            async loadDocuments() {
+                try {
+                    const response = await fetch('/api/documents');
+                    if (response.ok) {
+                        this.documents = await response.json();
+                    }
+                } catch (error) {
+                    console.error('Error loading documents:', error);
+                }
+            },
+
+            async createDocument() {
+                try {
+                    console.log('Creating document with data:', this.newDocument);
+                    const response = await fetch('/api/documents', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(this.newDocument)
+                    });
+
+                    if (response.ok) {
+                        this.showCreateModal = false;
+                        this.newDocument = {name: '', content: '', is_public: false};
+                        await this.loadDocuments();
+                    } else {
+                        const error = await response.json();
+                        console.error('Validation error:', error);
+
+                        // Format validation errors properly
+                        let errorMsg = 'Failed to create document:\n';
+                        if (Array.isArray(error.detail)) {
+                            errorMsg += error.detail.map(e => `- ${e.loc.join('.')}: ${e.msg}`).join('\n');
+                        } else {
+                            errorMsg += error.detail || 'Unknown error';
+                        }
+                        alert(errorMsg);
+                    }
+                } catch (error) {
+                    alert('Error creating document: ' + error);
+                }
+            },
+
+            async viewDocument(doc) {
+                try {
+                    // Fetch document details and permissions in parallel
+                    const [docResponse, permResponse] = await Promise.all([
+                        fetch(`/api/documents/${doc.id}`),
+                        fetch(`/api/documents/${doc.id}/permissions`)
+                    ]);
+
+                    if (docResponse.ok) {
+                        this.selectedDocument = await docResponse.json();
+                        this.documentPermissions = permResponse.ok ? await permResponse.json() : null;
+                        this.showViewModal = true;
+                    } else {
+                        alert('Access denied or document not found');
+                    }
+                } catch (error) {
+                    alert('Error: ' + error);
+                }
+            },
+
+            async editDocument(doc) {
+                const newContent = prompt('Edit document content:', doc.content);
+                if (newContent !== null) {
+                    try {
+                        const response = await fetch(`/api/documents/${doc.id}`, {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({content: newContent})
+                        });
+
+                        if (response.ok) {
+                            await this.loadDocuments();
+                        } else {
+                            alert('Access denied or update failed');
+                        }
+                    } catch (error) {
+                        alert('Error: ' + error);
+                    }
+                }
+            },
+
+            async deleteDocument(docId) {
+                if (confirm('Delete this document?')) {
+                    try {
+                        const response = await fetch(`/api/documents/${docId}`, {
+                            method: 'DELETE'
+                        });
+
+                        if (response.ok || response.status === 204) {
+                            await this.loadDocuments();
+                        } else {
+                            alert('Access denied or delete failed');
+                        }
+                    } catch (error) {
+                        alert('Error: ' + error);
+                    }
+                }
+            },
+
+            async togglePublic(doc) {
+                const newStatus = !doc.is_public;
+                const action = newStatus ? 'make public' : 'make private';
+
+                if (confirm(`Are you sure you want to ${action} "${doc.name}"?`)) {
+                    try {
+                        const response = await fetch(`/api/documents/${doc.id}`, {
+                            method: 'PUT',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({is_public: newStatus})
+                        });
+
+                        if (response.ok) {
+                            await this.loadDocuments();
+                        } else {
+                            alert('Failed to update document visibility');
+                        }
+                    } catch (error) {
+                        alert('Error: ' + error);
+                    }
+                }
+            },
+
+            async loadUsers() {
+                try {
+                    const response = await fetch('/api/users');
+                    if (response.ok) {
+                        this.availableUsers = await response.json();
+                    }
+                } catch (error) {
+                    console.error('Error loading users:', error);
+                }
+            },
+
+            async openShareModal(doc) {
+                this.shareDocument = doc;
+                this.newShare = {user_id: '', permission: 'read'};
+                await this.loadUsers();
+
+                // Filter out users who already have access
+                const sharedUserIds = doc.shares?.map(s => s.user.id) || [];
+                this.availableUsers = this.availableUsers.filter(u => !sharedUserIds.includes(u.id));
+
+                this.showShareModal = true;
+            },
+
+            async createShare() {
+                if (!this.newShare.user_id || !this.shareDocument) return;
+
+                try {
+                    const response = await fetch('/api/shares', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            document_id: this.shareDocument.id,
+                            user_id: this.newShare.user_id,
+                            permission: this.newShare.permission
+                        })
+                    });
+
+                    if (response.ok) {
+                        await this.loadDocuments();
+                        // Refresh share modal with updated document
+                        const updatedDoc = this.documents.find(d => d.id === this.shareDocument.id);
+                        if (updatedDoc) {
+                            await this.openShareModal(updatedDoc);
+                        }
+                    } else {
+                        let errorMsg = 'Unknown error';
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const error = await response.json();
+                            errorMsg = error.detail || errorMsg;
+                        } else {
+                            errorMsg = `Server error (${response.status})`;
+                        }
+                        alert('Failed to share: ' + errorMsg);
+                    }
+                } catch (error) {
+                    alert('Error: ' + error);
+                }
+            },
+
+            async removeShare(share) {
+                if (!confirm(`Remove sharing with ${share.user.name}?`)) return;
+
+                try {
+                    // Find the share ID from the shares API
+                    const sharesResponse = await fetch(`/api/shares/document/${this.shareDocument.id}`);
+                    if (!sharesResponse.ok) {
+                        alert('Failed to load shares');
+                        return;
+                    }
+
+                    const shares = await sharesResponse.json();
+                    const shareToDelete = shares.find(s => s.user_id === share.user.id);
+
+                    if (!shareToDelete) {
+                        alert('Share not found');
+                        return;
+                    }
+
+                    const response = await fetch(`/api/shares/${shareToDelete.id}`, {
+                        method: 'DELETE'
+                    });
+
+                    if (response.ok || response.status === 204) {
+                        await this.loadDocuments();
+                        // Refresh share modal with updated document
+                        const updatedDoc = this.documents.find(d => d.id === this.shareDocument.id);
+                        if (updatedDoc) {
+                            await this.openShareModal(updatedDoc);
+                        }
+                    } else {
+                        alert('Failed to remove share');
+                    }
+                } catch (error) {
+                    alert('Error: ' + error);
+                }
+            },
+
+            init() {
+                this.loadDocuments();
+            }
+        }
+    }
+</script>
+
+{% else %}
+<div class="section">
+    <h3>Please Login</h3>
+    <p>Login with Authentik to access the document management system.</p>
+    <a href="/login" class="btn btn-primary">Login with Authentik</a>
+</div>
+{% endif %}
+{% endblock %}

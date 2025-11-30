@@ -1,0 +1,68 @@
+# Topaz configuration
+---
+version: 2
+
+logging:
+  prod: false
+  log_level: info
+
+# API services configuration
+api:
+  health:
+    listen_address: "0.0.0.0:9494"
+
+  metrics:
+    listen_address: "0.0.0.0:9696"
+
+  services:
+    console:
+      grpc:
+        listen_address: "0.0.0.0:8081"
+
+      gateway:
+        listen_address: "0.0.0.0:8080"
+        allowed_origins:
+          - "*"
+        http: true
+
+    authorizer:
+      grpc:
+        listen_address: "0.0.0.0:8282"
+        connection_timeout_seconds: 120
+        certs:
+          tls_key_path: "/certs/topaz.key"
+          tls_cert_path: "/certs/topaz.crt"
+
+      gateway:
+        listen_address: "0.0.0.0:8383"
+        allowed_origins:
+          - "*"
+        http: true
+        read_timeout: 2s
+        read_header_timeout: 2s
+        write_timeout: 2s
+        idle_timeout: 30s
+
+# Directory configuration (embedded)
+directory:
+  db_path: "/data/directory.db"
+
+# OPA configuration
+opa:
+  instance_id: "webapp-topaz"
+  graceful_shutdown_period_seconds: 2
+  local_bundles:
+    paths: ["/policies"]
+    skip_verification: true
+  config:
+    plugins:
+      aserto_decision_log:
+        enabled: true
+
+# Decision logger configuration
+decision_logger:
+  type: "file"
+  config:
+    log_file_path: /data/decisions.log
+    max_file_size_mb: 20
+    max_file_count: 3

@@ -1,0 +1,205 @@
+# Docker Compose configuration for FastAPI-Topaz test webapp
+
+services:
+  # Application database
+  postgres:
+    image: postgres:16-alpine
+    container_name: webapp-postgres
+    environment:
+      POSTGRES_DB: webapp_db
+      POSTGRES_USER: webapp
+      POSTGRES_PASSWORD: webapp_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webapp -d webapp_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  # Authentik database
+  authentik-postgres:
+    image: postgres:16-alpine
+    container_name: authentik-postgres
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      start_period: 20s
+      interval: 30s
+      retries: 5
+      timeout: 5s
+    volumes:
+      - authentik_postgres_data:/var/lib/postgresql/data
+    env_file:
+      - env.authentik
+    environment:
+      POSTGRES_PASSWORD: ${PG_PASS:?database password required}
+      POSTGRES_USER: ${PG_USER:-authentik}
+      POSTGRES_DB: ${PG_DB:-authentik}
+    networks:
+      - internal
+
+  # Authentik Redis cache
+  authentik-redis:
+    image: redis:alpine
+    container_name: authentik-redis
+    restart: unless-stopped
+    command: --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      start_period: 20s
+      interval: 30s
+      retries: 5
+      timeout: 3s
+    volumes:
+      - authentik_redis:/data
+    networks:
+      - internal
+
+  # Authentik server
+  authentik-server:
+    image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server}:${AUTHENTIK_TAG:-2025.2.4}
+    container_name: authentik-server
+    restart: unless-stopped
+    command: server
+    env_file:
+      - env.authentik
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?secret key required}
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-authentik}
+      AUTHENTIK_POSTGRESQL__NAME: ${PG_DB:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS}
+    volumes:
+      - ./infra/authentik/media:/media
+      - ./infra/authentik/custom-templates:/templates
+    ports:
+      - "${COMPOSE_PORT_HTTP:-9000}:9000"
+      - "${COMPOSE_PORT_HTTPS:-9443}:9443"
+    networks:
+      internal:
+        aliases:
+          - authentik.local
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+
+  # Authentik worker
+  authentik-worker:
+    image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server}:${AUTHENTIK_TAG:-2025.2.4}
+    container_name: authentik-worker
+    restart: unless-stopped
+    command: worker
+    env_file:
+      - env.authentik
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?secret key required}
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-authentik}
+      AUTHENTIK_POSTGRESQL__NAME: ${PG_DB:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS}
+    user: root
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./infra/authentik/media:/media
+      - ./infra/authentik/certs:/certs
+      - ./infra/authentik/custom-templates:/templates
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    networks:
+      - internal
+
+  # Topaz authorizer
+  topaz:
+    image: ghcr.io/aserto-dev/topaz:latest
+    container_name: topaz
+    command: run -c /config/config.yaml
+    volumes:
+      - ./infra/topaz-config:/config:ro
+      - ./infra/policies:/policies:ro
+      - ./infra/certs:/certs:ro
+      - ./topaz-data:/data
+    ports:
+      - "8080:8080"  # Console HTTP
+      - "8081:8081"  # Console gRPC
+      - "8282:8282"  # Authorizer gRPC
+      - "8383:8383"  # Authorizer HTTP/Gateway
+      - "9494:9494"  # Health check
+      - "9696:9696"  # Metrics
+    networks:
+      - internal
+
+  # Mock location API
+  mock-location-api:
+    build:
+      context: ./mock-location-api
+      dockerfile: Dockerfile
+    container_name: mock-location-api
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - internal
+
+  # FastAPI webapp
+  webapp:
+    build:
+      context: ..
+      dockerfile: integration-tests/webapp/Dockerfile
+    container_name: fastapi-webapp
+    env_file:
+      - path: .env.oidc
+        required: false
+    environment:
+      DATABASE_URL: postgresql://webapp:webapp_pass@postgres/webapp_db
+      OIDC_ISSUER: http://authentik-server:9000/application/o/webapp/
+      # OIDC_CLIENT_ID and OIDC_CLIENT_SECRET come from .env.oidc (generated by Terraform)
+      OIDC_REDIRECT_URI: http://localhost:8000/auth/callback
+      TOPAZ_URL: topaz:8282
+      TOPAZ_CA_CERT: /certs/ca.crt
+      TOPAZ_TENANT_ID: ${TOPAZ_TENANT_ID:-}
+      TOPAZ_API_KEY: ${TOPAZ_API_KEY:-}
+      TOPAZ_POLICY_ROOT: webapp
+      TOPAZ_POLICY_INSTANCE_NAME: webapp
+      TOPAZ_POLICY_INSTANCE_LABEL: webapp
+      LOCATION_API_URL: http://mock-location-api:8001
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-secret-key}
+      DEBUG: ${DEBUG:-false}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      topaz:
+        condition: service_started
+      mock-location-api:
+        condition: service_healthy
+    volumes:
+      - ../:/fastapi-topaz:ro
+      - ./infra/certs:/certs:ro
+    networks:
+      - internal
+
+volumes:
+  postgres_data:
+  authentik_postgres_data:
+  authentik_redis:
+
+networks:
+  internal:
+    driver: bridge

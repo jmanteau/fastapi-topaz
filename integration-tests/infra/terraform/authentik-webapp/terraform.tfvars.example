@@ -1,0 +1,28 @@
+# Example Terraform variables
+# Copy to terraform.tfvars and update
+
+authentik_url         = "http://localhost:9000"
+authentik_token       = "changeme-bootstrap-token-from-env-authentik"
+webapp_redirect_uri   = "http://localhost:8000/auth/callback"
+
+# Customize test users if needed
+test_users = [
+  {
+    username = "alice"
+    name     = "Alice Smith"
+    email    = "alice@example.com"
+    password = "password"
+  },
+  {
+    username = "bob"
+    name     = "Bob Jones"
+    email    = "bob@example.com"
+    password = "password"
+  },
+  {
+    username = "charlie"
+    name     = "Charlie Brown"
+    email    = "charlie@example.com"
+    password = "password"
+  }
+]

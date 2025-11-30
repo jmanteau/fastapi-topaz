@@ -1,0 +1,125 @@
+site_name: FastAPI-Topaz
+site_description: FastAPI middleware for Topaz authorization
+site_url: https://opcr-io.github.io/topaz
+repo_url: https://github.com/opcr-io/topaz
+repo_name: fastapi-topaz
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+    - search.highlight
+    - search.suggest
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+hooks:
+  - docs/hooks/test_docs_generator.py
+
+plugins:
+  - search
+  - mermaid2
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            members_order: source
+            docstring_style: google
+            docstring_section_style: spacy
+            show_signature_annotations: true
+            separate_signature: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - Getting Started: tutorials/getting-started.md
+      - Example App:
+          - Setup: tutorials/example-app/01-setup.md
+          - Authentication: tutorials/example-app/02-authentication.md
+          - Authorization: tutorials/example-app/03-authorization.md
+          - Sharing Documents: tutorials/example-app/04-sharing-documents.md
+  - How-to Guides:
+      - Choosing an Approach: how-to/choosing-authorization-approach.md
+      - Identity Providers: how-to/identity-providers.md
+      - Resource Hierarchy: how-to/resource-hierarchy.md
+      - Testing: how-to/testing.md
+      - Integration Testing: how-to/integration-testing.md
+      - Circuit Breaker: how-to/circuit-breaker.md
+      - Audit Logging: how-to/audit-logging.md
+      - Policy Generation: how-to/policy-generation.md
+      - Connection Pooling: how-to/connection-pooling.md
+      - Observability: how-to/observability.md
+      - Middleware: how-to/middleware.md
+      - Troubleshooting: how-to/troubleshooting.md
+      - Example App:
+          - Local Development: how-to/example-app/local-development.md
+          - Authentik Setup: how-to/example-app/authentik-setup.md
+  - Reference:
+      - API Reference: reference/api.md
+      - CLI Reference: reference/cli.md
+      - OIDC Reference: reference/oidc.md
+      - E2E Test Scenarios: reference/e2e-tests.md
+      - Example App Spec: reference/example-app-spec.md
+  - Explanation:
+      - Architecture: explanation/architecture.md
+      - Authorization Models: explanation/authorization-models.md
+      - SSO Concepts: explanation/sso-concepts.md
+      - Patterns: explanation/patterns.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - def_list
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/opcr-io/topaz
+  generator: false

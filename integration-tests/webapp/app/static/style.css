@@ -1,0 +1,570 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    color: #333;
+    background: #f5f5f5;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+.navbar {
+    background: #2c3e50;
+    color: white;
+    padding: 1rem 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.navbar .container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.navbar h1 {
+    font-size: 1.5rem;
+}
+
+.nav-links {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+}
+
+.nav-links a {
+    color: white;
+    text-decoration: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    transition: background 0.3s;
+}
+
+.nav-links a:hover {
+    background: rgba(255,255,255,0.1);
+}
+
+main {
+    padding: 2rem 0;
+    min-height: calc(100vh - 200px);
+}
+
+.hero {
+    background: white;
+    padding: 3rem 2rem;
+    border-radius: 8px;
+    text-align: center;
+    margin-bottom: 2rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.hero h2 {
+    color: #2c3e50;
+    margin-bottom: 1rem;
+}
+
+.section {
+    background: white;
+    padding: 2rem;
+    border-radius: 8px;
+    margin-bottom: 2rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.section h3 {
+    color: #2c3e50;
+    margin-bottom: 1rem;
+}
+
+.dashboard {
+    display: grid;
+    gap: 2rem;
+}
+
+.document-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.document-card {
+    background: #f8f9fa;
+    padding: 1rem;
+    border-radius: 8px;
+    border: 1px solid #dee2e6;
+    position: relative;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 0.5rem;
+}
+
+.document-card h4 {
+    color: #2c3e50;
+    margin: 0;
+    flex: 1;
+    font-size: 1rem;
+}
+
+.card-owner {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    color: #6c757d;
+    background: #e9ecef;
+    padding: 0.2rem 0.5rem;
+    border-radius: 12px;
+    max-width: 120px;
+    overflow: hidden;
+}
+
+.owner-icon {
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    color: #6c757d;
+}
+
+.owner-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.card-permissions {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 0.5rem;
+}
+
+.perm-icon {
+    font-size: 0.875rem;
+    padding: 0.25rem;
+    border-radius: 4px;
+    cursor: help;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+}
+
+.perm-icon i {
+    font-size: 0.75rem;
+}
+
+.perm-active {
+    opacity: 1;
+    color: #2c3e50;
+}
+
+.perm-active[title="Owner"] {
+    color: #ffc107;
+}
+
+.perm-active[title="Can Read"] {
+    color: #17a2b8;
+}
+
+.perm-active[title="Can Write"] {
+    color: #28a745;
+}
+
+.perm-active[title="Can Delete"] {
+    color: #dc3545;
+}
+
+.perm-inactive {
+    opacity: 0.3;
+    color: #6c757d;
+}
+
+.badge-shared {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+
+.doc-meta {
+    margin: 0.5rem 0;
+}
+
+.doc-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.badge-public {
+    background: #d4edda;
+    color: #155724;
+}
+
+.badge-private {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.btn {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 4px;
+    background: #6c757d;
+    color: white;
+    cursor: pointer;
+    text-decoration: none;
+    font-size: 1rem;
+    transition: background 0.3s;
+}
+
+.btn:hover {
+    background: #5a6268;
+}
+
+.btn-primary {
+    background: #007bff;
+}
+
+.btn-primary:hover {
+    background: #0056b3;
+}
+
+.btn-success {
+    background: #28a745;
+}
+
+.btn-success:hover {
+    background: #218838;
+}
+
+.btn-danger {
+    background: #dc3545;
+}
+
+.btn-danger:hover {
+    background: #c82333;
+}
+
+.btn-secondary {
+    background: #6c757d;
+}
+
+.btn-secondary:hover {
+    background: #5a6268;
+}
+
+.btn-sm {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.875rem;
+}
+
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    background: white;
+    padding: 2rem;
+    border-radius: 8px;
+    max-width: 600px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.modal-content h3 {
+    margin-bottom: 1rem;
+}
+
+.form-group {
+    margin-bottom: 1rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+}
+
+.form-group input[type="text"],
+.form-group textarea {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.form-group input[type="checkbox"] {
+    margin-right: 0.5rem;
+}
+
+.form-actions {
+    display: flex;
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+
+.document-content {
+    background: #f8f9fa;
+    padding: 1rem;
+    border-radius: 4px;
+    margin: 1rem 0;
+    white-space: pre-wrap;
+}
+
+.footer {
+    background: #2c3e50;
+    color: white;
+    padding: 2rem 0;
+    text-align: center;
+    margin-top: 2rem;
+}
+
+[x-cloak] {
+    display: none !important;
+}
+
+/* Document Detail Modal */
+.modal-large {
+    max-width: 700px;
+}
+
+.doc-info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.info-card {
+    background: #f8f9fa;
+    padding: 1rem;
+    border-radius: 8px;
+    border: 1px solid #dee2e6;
+    margin-bottom: 1rem;
+}
+
+.info-card h4 {
+    color: #495057;
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.owner-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.owner-name {
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.owner-email {
+    font-size: 0.875rem;
+    color: #6c757d;
+}
+
+.permissions-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.perm-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.perm-yes {
+    background: #d4edda;
+    color: #155724;
+}
+
+.perm-no {
+    background: #e9ecef;
+    color: #6c757d;
+    text-decoration: line-through;
+}
+
+.shares-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.share-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem;
+    background: white;
+    border-radius: 4px;
+}
+
+.share-user {
+    font-weight: 500;
+}
+
+.badge-read {
+    background: #cce5ff;
+    color: #004085;
+}
+
+.badge-write {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.text-muted {
+    color: #6c757d;
+    font-style: italic;
+}
+
+@media (max-width: 600px) {
+    .doc-info-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Share Modal Styles */
+.form-select {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 1rem;
+    background-color: white;
+}
+
+.permission-options {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.5rem;
+}
+
+.permission-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    cursor: pointer;
+    flex: 1;
+    transition: all 0.2s;
+}
+
+.permission-option:hover {
+    border-color: #007bff;
+    background: #f8f9fa;
+}
+
+.permission-option input[type="radio"] {
+    margin-top: 0.25rem;
+}
+
+.permission-option input[type="radio"]:checked + .permission-label {
+    color: #007bff;
+}
+
+.permission-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.permission-label i {
+    margin-right: 0.25rem;
+}
+
+.permission-label small {
+    color: #6c757d;
+    font-size: 0.75rem;
+}
+
+.share-user-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.share-email {
+    font-size: 0.75rem;
+}
+
+.share-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.share-actions .btn-sm {
+    padding: 0.2rem 0.4rem;
+}
+
+/* Button icon alignment */
+.btn i {
+    margin-right: 0.25rem;
+}
+
+.btn-sm i {
+    margin-right: 0.15rem;
+}
+
+/* Info button */
+.btn-info {
+    background: #17a2b8;
+}
+
+.btn-info:hover {
+    background: #138496;
+}
+
+/* Warning button */
+.btn-warning {
+    background: #ffc107;
+    color: #212529;
+}
+
+.btn-warning:hover {
+    background: #e0a800;
+}
