@@ -4,6 +4,8 @@ FastAPI middleware for [Topaz](https://www.topaz.sh/) authorization.
 
 [![PyPI](https://img.shields.io/pypi/v/fastapi-topaz)](https://pypi.org/project/fastapi-topaz/) [![Python Version](https://img.shields.io/pypi/pyversions/fastapi-topaz)](https://pypi.org/project/fastapi-topaz/) [![License](https://img.shields.io/pypi/l/fastapi-topaz)](https://github.com/jmanteau/fastapi-topaz/blob/main/LICENSE) [![Downloads](https://img.shields.io/pypi/dm/fastapi-topaz)](https://pypi.org/project/fastapi-topaz/)
 
+Full documentation following the [Diataxis](https://diataxis.fr/) framework available at **[jmanteau.github.io/fastapi-topaz](https://jmanteau.github.io/fastapi-topaz)**.
+
 ## Installation
 
 ```bash
@@ -41,18 +43,6 @@ async def list_documents(
 ):
     return {"documents": [...]}
 ```
-
-## Documentation
-
-Full documentation following the [Diataxis](https://diataxis.fr/) framework available at **[jmanteau.github.io/fastapi-topaz](https://jmanteau.github.io/fastapi-topaz)**.
-
-| Section | Focus | Description |
-| ------- | ----- | ----------- |
-| [Tutorials](https://jmanteau.github.io/fastapi-topaz/tutorials/getting-started/) | Learning-Oriented | Step-by-step guides to get started |
-| [How-To Guides](https://jmanteau.github.io/fastapi-topaz/how-to/choosing-authorization-approach/) | Task-Oriented | Solve specific problems |
-| [Reference](https://jmanteau.github.io/fastapi-topaz/reference/api/) | Information-Oriented | API and CLI specifications |
-| [Explanation](https://jmanteau.github.io/fastapi-topaz/explanation/architecture/) | Understanding-Oriented | Architecture and concepts |
-
 ## Features
 
 | Feature                    | Description                               |
@@ -65,6 +55,16 @@ Full documentation following the [Diataxis](https://diataxis.fr/) framework avai
 | Circuit breaker            | Graceful degradation                      |
 | Audit logging              | Structured JSON logging                   |
 | Observability              | Prometheus metrics, OpenTelemetry tracing |
+
+
+## Documentation
+
+| Section                                                                                           | Focus                  | Description                        |
+| ------------------------------------------------------------------------------------------------- | ---------------------- | ---------------------------------- |
+| [Tutorials](https://jmanteau.github.io/fastapi-topaz/tutorials/getting-started/)                  | Learning-Oriented      | Step-by-step guides to get started |
+| [How-To Guides](https://jmanteau.github.io/fastapi-topaz/how-to/choosing-authorization-approach/) | Task-Oriented          | Solve specific problems            |
+| [Reference](https://jmanteau.github.io/fastapi-topaz/reference/api/)                              | Information-Oriented   | API and CLI specifications         |
+| [Explanation](https://jmanteau.github.io/fastapi-topaz/explanation/architecture/)                 | Understanding-Oriented | Architecture and concepts          |
 
 ## Requirements
 
