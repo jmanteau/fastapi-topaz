@@ -1,6 +1,6 @@
 # FastAPI-Topaz
 
-**Production-ready authorization for FastAPI using Topaz.**
+**Authorization framework for FastAPI using Topaz.**
 
 Add fine-grained authorization to your FastAPI application with native dependency injection, caching, circuit breakers, and observability built in.
 
@@ -154,33 +154,33 @@ pip install fastapi-topaz
 
 This documentation follows the [Diataxis](https://diataxis.fr/) framework:
 
-| Section | Purpose | Start Here |
-|---------|---------|------------|
-| **[Tutorials](tutorials/getting-started.md)** | Learning-oriented, step-by-step guides | [Getting Started](tutorials/getting-started.md) |
+| Section                                           | Purpose                                | Start Here                                         |
+| ------------------------------------------------- | -------------------------------------- | -------------------------------------------------- |
+| **[Tutorials](tutorials/getting-started.md)**     | Learning-oriented, step-by-step guides | [Getting Started](tutorials/getting-started.md)    |
 | **[How-to Guides](how-to/identity-providers.md)** | Task-oriented, solve specific problems | [Identity Providers](how-to/identity-providers.md) |
-| **[Reference](reference/api.md)** | Technical specifications | [API Reference](reference/api.md) |
-| **[Explanation](explanation/architecture.md)** | Understanding-oriented, concepts | [Architecture](explanation/architecture.md) |
+| **[Reference](reference/api.md)**                 | Technical specifications               | [API Reference](reference/api.md)                  |
+| **[Explanation](explanation/architecture.md)**    | Understanding-oriented, concepts       | [Architecture](explanation/architecture.md)        |
 
 ---
 
 ## Feature Status
 
-| Feature | Status | Documentation |
-|---------|--------|---------------|
-| Policy-based authorization | :white_check_mark: Stable | [API Reference](reference/api.md#require_policy_allowed) |
-| ReBAC (relationship-based) | :white_check_mark: Stable | [API Reference](reference/api.md#require_rebac_allowed) |
-| Auto policy path resolution | :white_check_mark: Stable | [API Reference](reference/api.md#require_policy_auto) |
-| Decision caching | :white_check_mark: Stable | [API Reference](reference/api.md#decisioncache) |
-| Circuit breaker | :white_check_mark: Stable | [Circuit Breaker](how-to/circuit-breaker.md) |
-| Connection pooling | :white_check_mark: Stable | [Connection Pooling](how-to/connection-pooling.md) |
-| Authorization middleware | :white_check_mark: Stable | [Middleware](how-to/middleware.md) |
-| Audit logging | :white_check_mark: Stable | [Audit Logging](how-to/audit-logging.md) |
-| Prometheus metrics | :white_check_mark: Stable | [Observability](how-to/observability.md) |
-| OpenTelemetry tracing | :white_check_mark: Stable | [Observability](how-to/observability.md) |
-| Testing utilities | :white_check_mark: Stable | [Testing](how-to/testing.md) |
-| CLI tools | :white_check_mark: Stable | [CLI Reference](reference/cli.md) |
-| Resource hierarchy | :white_check_mark: Stable | [Resource Hierarchy](how-to/resource-hierarchy.md) |
-| Integration testing | :white_check_mark: Stable | [Integration Testing](how-to/integration-testing.md) |
+| Feature                     | Status                    | Documentation                                            |
+| --------------------------- | ------------------------- | -------------------------------------------------------- |
+| Policy-based authorization  | :white_check_mark: Stable | [API Reference](reference/api.md#require_policy_allowed) |
+| ReBAC (relationship-based)  | :white_check_mark: Stable | [API Reference](reference/api.md#require_rebac_allowed)  |
+| Auto policy path resolution | :white_check_mark: Stable | [API Reference](reference/api.md#require_policy_auto)    |
+| Decision caching            | :white_check_mark: Stable | [API Reference](reference/api.md#decisioncache)          |
+| Circuit breaker             | :white_check_mark: Stable | [Circuit Breaker](how-to/circuit-breaker.md)             |
+| Connection pooling          | :white_check_mark: Stable | [Connection Pooling](how-to/connection-pooling.md)       |
+| Authorization middleware    | :white_check_mark: Stable | [Middleware](how-to/middleware.md)                       |
+| Audit logging               | :white_check_mark: Stable | [Audit Logging](how-to/audit-logging.md)                 |
+| Prometheus metrics          | :white_check_mark: Stable | [Observability](how-to/observability.md)                 |
+| OpenTelemetry tracing       | :white_check_mark: Stable | [Observability](how-to/observability.md)                 |
+| Testing utilities           | :white_check_mark: Stable | [Testing](how-to/testing.md)                             |
+| CLI tools                   | :white_check_mark: Stable | [CLI Reference](reference/cli.md)                        |
+| Resource hierarchy          | :white_check_mark: Stable | [Resource Hierarchy](how-to/resource-hierarchy.md)       |
+| Integration testing         | :white_check_mark: Stable | [Integration Testing](how-to/integration-testing.md)     |
 
 ---
 
