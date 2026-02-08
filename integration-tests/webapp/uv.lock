@@ -425,14 +425,43 @@ wheels = [
 ]
 
 [[package]]
+name = "fastapi-topaz"
+version = "0.1"
+source = { editable = "../../" }
+dependencies = [
+    { name = "aserto" },
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aserto", specifier = ">=0.32.2" },
+    { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.7.0" },
+    { name = "fastapi", specifier = ">=0.100.0" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.0" },
+    { name = "mkdocs", marker = "extra == 'docs'", specifier = ">=1.6.0" },
+    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5.0" },
+    { name = "mkdocs-mermaid2-plugin", marker = "extra == 'docs'", specifier = ">=1.1.0" },
+    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.26.0" },
+    { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7.0" },
+    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.2" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
+    { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+]
+provides-extras = ["dev", "docs"]
+
+[[package]]
 name = "fastapi-topaz-test-webapp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
-    { name = "aserto" },
     { name = "authlib" },
     { name = "fastapi" },
+    { name = "fastapi-topaz" },
     { name = "httpx" },
     { name = "itsdangerous" },
     { name = "jinja2" },
@@ -461,10 +490,10 @@ integration = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.14.0" },
-    { name = "aserto", specifier = ">=0.32.2" },
     { name = "authlib", specifier = ">=1.4.0" },
     { name = "basedpyright", marker = "extra == 'dev'", specifier = ">=1.21.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "fastapi-topaz", editable = "../../" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "httpx", marker = "extra == 'integration'", specifier = ">=0.28.0" },
     { name = "itsdangerous", specifier = ">=2.1.0" },

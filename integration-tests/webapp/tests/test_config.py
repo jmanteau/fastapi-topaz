@@ -14,7 +14,7 @@ def test_settings_default_values():
     assert settings.oidc_issuer == "http://localhost:9000/application/o/webapp/"
     assert settings.oidc_client_id == "webapp-client"
     assert settings.oidc_redirect_uri == "http://localhost:8000/auth/callback"
-    assert settings.topaz_url == "http://localhost:8282"
+    assert settings.topaz_url == "localhost:8282"
     assert settings.location_api_url == "http://localhost:8001"
     assert settings.debug is False
     assert settings.secret_key == "change-me-in-production"

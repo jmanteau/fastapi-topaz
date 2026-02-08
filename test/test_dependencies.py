@@ -35,7 +35,6 @@ from httpx import ASGITransport, AsyncClient
 
 from fastapi_topaz import (
     DecisionCache,
-    HierarchyResult,
     TopazConfig,
     filter_authorized_resources,
     get_authorized_resource,
@@ -44,7 +43,7 @@ from fastapi_topaz import (
     require_rebac_allowed,
     require_rebac_hierarchy,
 )
-from fastapi_topaz.dependencies import _policy_path_heuristic, _resolve_policy_path
+from fastapi_topaz._policy import _policy_path_heuristic, _resolve_policy_path
 
 
 @pytest.fixture
@@ -729,7 +728,7 @@ class TestGetAuthorizedResource:
         """Should return fetched resource when authorization passes."""
         fake_doc = FakeDocument(id=123, name="Test", owner="alice")
 
-        def fetcher(req, db):
+        def fetcher(req):
             return fake_doc
 
         app = FastAPI()
@@ -746,7 +745,7 @@ class TestGetAuthorizedResource:
 
     def test_returns_404_when_resource_not_found(self, topaz_config, patch_client):
         """Should return 404 when resource_fetcher returns None."""
-        def fetcher(req, db):
+        def fetcher(req):
             return None
 
         app = FastAPI()
@@ -764,7 +763,7 @@ class TestGetAuthorizedResource:
         """Should return 403 when resource found but not authorized."""
         fake_doc = FakeDocument(id=123, name="Test", owner="alice")
 
-        def fetcher(req, db):
+        def fetcher(req):
             return fake_doc
 
         app = FastAPI()
@@ -782,7 +781,7 @@ class TestGetAuthorizedResource:
         """Should use path param 'id' as object_id by default."""
         fake_doc = FakeDocument(id=456, name="Test", owner="alice")
 
-        def fetcher(req, db):
+        def fetcher(req):
             return fake_doc
 
         app = FastAPI()
@@ -802,7 +801,7 @@ class TestGetAuthorizedResource:
         """Should use static object_id when provided."""
         fake_doc = FakeDocument(id=123, name="Test", owner="alice")
 
-        def fetcher(req, db):
+        def fetcher(req):
             return fake_doc
 
         dep = get_authorized_resource(topaz_config, fetcher, "document", "can_read", object_id="fixed-id")
@@ -983,7 +982,7 @@ class TestAsyncRoutes:
             doc: FakeDocument = Depends(
                 get_authorized_resource(
                     topaz_config,
-                    lambda req, db: FakeDocument(
+                    lambda req: FakeDocument(
                         id=int(req.path_params["id"]),
                         name="Async Doc",
                         owner="alice",
@@ -1172,9 +1171,9 @@ class TestDecisionCache:
         def mock_monotonic():
             return current_time[0]
 
-        # Monkeypatch time.monotonic in the dependencies module
-        import fastapi_topaz.dependencies as deps
-        monkeypatch.setattr(deps.time, "monotonic", mock_monotonic)
+        # Monkeypatch time.monotonic in the cache module
+        import fastapi_topaz.cache as cache_mod
+        monkeypatch.setattr(cache_mod.time, "monotonic", mock_monotonic)
 
         cache = DecisionCache(ttl_seconds=60)
         await cache.set("user-1", "policy.path", "allowed", None, True)

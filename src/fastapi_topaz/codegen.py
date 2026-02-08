@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from ._policy import _resolve_policy_path
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from fastapi.routing import APIRoute
@@ -71,31 +73,6 @@ class ValidationResult:
     missing_policies: list[MissingPolicy] = field(default_factory=list)
     orphaned_policies: list[str] = field(default_factory=list)
     validated_policies: list[str] = field(default_factory=list)
-
-
-def _policy_path_heuristic(path: str) -> str:
-    """Convert URL path to policy path segment."""
-    if not path or path == "/":
-        return ""
-    segments = path.strip("/").split("/")
-    result_parts: list[str] = []
-    for segment in segments:
-        if not segment:
-            continue
-        if segment.startswith("{") and segment.endswith("}"):
-            param_name = segment[1:-1]
-            result_parts.append(f"__{param_name}")
-        else:
-            result_parts.append(segment)
-    if not result_parts:
-        return ""
-    return "." + ".".join(result_parts)
-
-
-def _resolve_policy_path(root: str, method: str, path: str) -> str:
-    """Build full policy path from root, method, and URL path."""
-    heuristic = _policy_path_heuristic(path)
-    return f"{root}.{method}{heuristic}"
 
 
 def _extract_path_params(path: str) -> list[str]:

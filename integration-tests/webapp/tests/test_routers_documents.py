@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 from pydantic import ValidationError
 
@@ -9,7 +7,6 @@ from app.routers.documents import (
     DocumentCreate,
     DocumentResponse,
     DocumentUpdate,
-    doc_id_mapper,
 )
 
 
@@ -154,42 +151,3 @@ def test_document_response_from_attributes_config():
     assert DocumentResponse.model_config.get("from_attributes") is True
 
 
-def test_doc_id_mapper_with_id():
-    """doc_id_mapper should extract id from request path params."""
-    request = MagicMock()
-    request.path_params = {"id": "123"}
-
-    with patch("fastapi_topaz.get_request_context", return_value=request):
-        result = doc_id_mapper()
-
-        assert result == "123"
-
-
-def test_doc_id_mapper_no_id():
-    """doc_id_mapper should return empty string when id not in path params."""
-    request = MagicMock()
-    request.path_params = {"other": "value"}
-
-    with patch("fastapi_topaz.get_request_context", return_value=request):
-        result = doc_id_mapper()
-
-        assert result == ""
-
-
-def test_doc_id_mapper_no_request():
-    """doc_id_mapper should return empty string when no request context."""
-    with patch("fastapi_topaz.get_request_context", return_value=None):
-        result = doc_id_mapper()
-
-        assert result == ""
-
-
-def test_doc_id_mapper_integer_id():
-    """doc_id_mapper should handle integer id."""
-    request = MagicMock()
-    request.path_params = {"id": 456}
-
-    with patch("fastapi_topaz.get_request_context", return_value=request):
-        result = doc_id_mapper()
-
-        assert result == 456

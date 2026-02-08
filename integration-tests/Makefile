@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart clean db-migrate db-upgrade db-downgrade test setup reload-webapp status sync-oidc-secret
+.PHONY: help build up down logs restart clean db-migrate db-upgrade db-downgrade test test-integration test-e2e setup-integration setup reload-webapp status sync-oidc-secret
 
 help:
 	@echo "FastAPI-Topaz Test Webapp - Available Commands"
@@ -25,6 +25,7 @@ help:
 	@echo "Development Commands:"
 	@echo "  make setup          - Initial setup (build + up + migrate)"
 	@echo "  make test           - Run tests"
+	@echo "  make test-integration - Run integration tests (requires playwright)"
 	@echo "  make shell          - Open webapp container shell"
 	@echo "  make check-health   - Check health of all services"
 	@echo "  make status         - Show service URLs and status"
@@ -104,13 +105,13 @@ clean:
 
 # Database commands
 db-migrate:
-	docker-compose exec webapp alembic revision --autogenerate -m "$(msg)"
+	docker-compose exec webapp uv run alembic revision --autogenerate -m "$(msg)"
 
 db-upgrade:
-	docker-compose exec webapp alembic upgrade head
+	docker-compose exec webapp uv run alembic upgrade head
 
 db-downgrade:
-	docker-compose exec webapp alembic downgrade -1
+	docker-compose exec webapp uv run alembic downgrade -1
 
 db-shell:
 	docker-compose exec postgres psql -U webapp -d webapp_db
@@ -132,7 +133,18 @@ setup: build up
 	@echo "2. Access webapp at http://localhost:8000"
 
 test:
-	cd webapp && uv run pytest -v
+	cd webapp && uv run --extra dev pytest -v --ignore=tests/integration
+
+test-integration:
+	cd webapp && uv run --extra integration pytest -v tests/integration
+
+test-e2e:
+	cd e2e && uv run pytest -v tests/
+
+setup-integration:
+	cd webapp && uv sync --extra integration
+	cd webapp && uv run --extra integration playwright install chromium
+	@echo "✓ Integration test dependencies ready"
 
 shell:
 	docker-compose exec webapp /bin/bash
@@ -235,7 +247,7 @@ tf-apply:
 	@make sync-oidc-secret
 	@echo ""
 	@echo "Restarting webapp..."
-	@docker-compose restart webapp
+	@docker-compose up -d webapp
 	@echo ""
 	@echo "========================================="
 	@echo "Setup complete! Test users created:"

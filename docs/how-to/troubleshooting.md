@@ -355,12 +355,12 @@ circuit_breaker=CircuitBreaker(
 
 ## Common Error Messages
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `Identity has no value` | identity_provider returned None/empty | Check header extraction, authentication |
-| `policy_path must not be empty` | Empty policy path | Check policy_path_root configuration |
-| `ConnectionPool is closed` | Pool used after shutdown | Don't reuse config after app shutdown |
-| `Semaphore released too many times` | Bug in custom code | Check async context managers |
+| Error                               | Cause                                 | Solution                                |
+| ----------------------------------- | ------------------------------------- | --------------------------------------- |
+| `Identity has no value`             | identity_provider returned None/empty | Check header extraction, authentication |
+| `policy_path must not be empty`     | Empty policy path                     | Check policy_path_root configuration    |
+| `ConnectionPool is closed`          | Pool used after shutdown              | Don't reuse config after app shutdown   |
+| `Semaphore released too many times` | Bug in custom code                    | Check async context managers            |
 
 ---
 
@@ -387,7 +387,7 @@ If you're still stuck:
    # ... minimal config ...
    ```
 
-4. **Report issues:** [GitHub Issues](https://github.com/opcr-io/topaz/issues)
+4. **Report issues:** [GitHub Issues](https://github.com/jmanteau/fastapi-topaz/issues)
 
 ## See Also
 

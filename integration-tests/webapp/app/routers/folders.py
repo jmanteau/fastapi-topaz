@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi_topaz import require_policy_allowed
-from pydantic import BaseModel
+from fastapi_topaz import require_policy_allowed, require_policy_auto, require_rebac_hierarchy
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
@@ -30,8 +30,7 @@ class FolderResponse(BaseModel):
     owner_id: str
     parent_folder_id: int | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 @router.get("")
@@ -51,7 +50,7 @@ async def create_folder(
     data: FolderCreate,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _: None = Depends(require_policy_allowed(topaz_config, "webapp.api.folders")),
+    _: None = Depends(require_policy_auto(topaz_config)),
 ) -> FolderResponse:
     """Create new folder."""
     folder = Folder(
@@ -73,7 +72,7 @@ async def get_folder(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _: None = Depends(require_policy_allowed(topaz_config, "webapp.api.folders")),
+    _: None = Depends(require_policy_allowed(topaz_config, "webapp.GET.api.folders.__id")),
 ) -> FolderResponse:
     """Get folder by ID."""
     folder = db.query(Folder).filter(Folder.id == id).first()
@@ -91,7 +90,7 @@ async def update_folder(
     data: FolderUpdate,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _: None = Depends(require_policy_allowed(topaz_config, "webapp.api.folders")),
+    _: None = Depends(require_policy_auto(topaz_config)),
 ) -> FolderResponse:
     """Update folder."""
     folder = db.query(Folder).filter(Folder.id == id).first()
@@ -112,7 +111,7 @@ async def delete_folder(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _: None = Depends(require_policy_allowed(topaz_config, "webapp.api.folders")),
+    _: None = Depends(require_policy_auto(topaz_config)),
 ):
     """Delete folder."""
     folder = db.query(Folder).filter(Folder.id == id).first()
@@ -122,3 +121,29 @@ async def delete_folder(
 
     db.delete(folder)
     db.commit()
+
+
+@router.get("/{parent_id}/subfolders/{child_id}")
+async def get_subfolder(
+    parent_id: int,
+    child_id: int,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    _=Depends(
+        require_rebac_hierarchy(
+            topaz_config,
+            [
+                ("folder", "parent_id", "can_read"),
+                ("folder", "child_id", "can_read"),
+            ],
+        )
+    ),
+) -> FolderResponse:
+    """Get subfolder with hierarchical authorization check."""
+    folder = db.query(Folder).filter(Folder.id == child_id).first()
+
+    if not folder:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subfolder not found")
+
+    return FolderResponse.model_validate(folder)

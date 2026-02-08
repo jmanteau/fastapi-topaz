@@ -37,6 +37,13 @@ can_read if {
     common.can_read_document
 }
 
+# Allow when document not found (let route handler return 404)
+can_read if {
+    input.resource.object_type == "document"
+    common.user_sub
+    not input.resource.owner_id
+}
+
 # can_write: User can write/update document
 default can_write := false
 

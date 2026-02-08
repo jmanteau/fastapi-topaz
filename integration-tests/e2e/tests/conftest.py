@@ -83,20 +83,20 @@ def cleanup_test_data(base_url: str, session_cookies: dict[str, str]):
 
         try:
             # Delete all documents for this user
-            response = client.get(f"{base_url}/documents/")
+            response = client.get(f"{base_url}/api/documents")
             if response.status_code == 200:
                 documents = response.json()
                 for doc in documents:
-                    client.delete(f"{base_url}/documents/{doc['id']}")
+                    client.delete(f"{base_url}/api/documents/{doc['id']}")
                 print(f"✓ {username}: deleted {len(documents)} documents")
 
             # Delete all folders for this user
-            response = client.get(f"{base_url}/folders/")
+            response = client.get(f"{base_url}/api/folders")
             if response.status_code == 200:
                 folders = response.json()
                 # Delete in reverse order (children first) to handle nesting
                 for folder in reversed(folders):
-                    client.delete(f"{base_url}/folders/{folder['id']}")
+                    client.delete(f"{base_url}/api/folders/{folder['id']}")
                 print(f"✓ {username}: deleted {len(folders)} folders")
         except Exception as e:
             print(f"⚠ {username}: cleanup error - {e}")

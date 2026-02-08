@@ -30,6 +30,14 @@ class OIDCAuthenticator:
         if self.debug:
             print(f"  [DEBUG] {message}")
 
+    def _normalize_url(self, url: str) -> str:
+        """Replace internal Docker hostnames with localhost equivalents."""
+        return re.sub(
+            r"http://authentik-server:(\d+)",
+            self.authentik_url,
+            url,
+        )
+
     def login_user(self, email: str, password: str, timeout: float = 30.0) -> str | None:
         """
         Login user via OIDC flow using HTTP requests only.
@@ -53,7 +61,7 @@ class OIDCAuthenticator:
                 # The redirect should give us the authorization URL
 
                 # Step 2: Get the authorization URL from response
-                auth_url = str(login_response.url)
+                auth_url = self._normalize_url(str(login_response.url))
 
                 if self.authentik_url not in auth_url:
                     print(f"  ✗ Expected redirect to Authentik, got: {auth_url}")
@@ -157,7 +165,7 @@ class OIDCAuthenticator:
                 self._debug(f"Cookies: {list(client.cookies.keys())}")
 
                 # Extract flow information from URL
-                current_url = str(resp1.url)
+                current_url = self._normalize_url(str(resp1.url))
 
                 if "/if/flow/" not in current_url and "/flows/executor/" not in current_url:
                     self._debug("No Authentik flow found")
@@ -263,7 +271,7 @@ class OIDCAuthenticator:
                         if not next_url.startswith("http"):
                             oauth_url = f"{self.authentik_url}{next_url}"
                         else:
-                            oauth_url = next_url
+                            oauth_url = self._normalize_url(next_url)
 
                         self._debug(f"Following OAuth authorization: {oauth_url}")
 

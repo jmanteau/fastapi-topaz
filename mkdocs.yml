@@ -1,7 +1,7 @@
 site_name: FastAPI-Topaz
 site_description: FastAPI middleware for Topaz authorization
-site_url: https://opcr-io.github.io/topaz
-repo_url: https://github.com/opcr-io/topaz
+site_url: https://jmanteau.github.io/fastapi-topaz/
+repo_url: https://github.com/jmanteau/fastapi-topaz
 repo_name: fastapi-topaz
 
 theme:
@@ -121,5 +121,5 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/opcr-io/topaz
+      link: https://github.com/jmanteau/fastapi-topaz
   generator: false

@@ -186,34 +186,21 @@ For detailed documentation:
 
 
 def get_cookies():
-    """Get session cookies using browser automation."""
-    from tests.integration.auth_helper import AuthenticationHelper
+    """Get session cookies using HTTP-based OIDC flow."""
+    from tests.integration.auth_helper import OIDCAuthenticator
 
     print("\n" + "=" * 60)
-    print("Getting Session Cookies")
+    print("Getting Session Cookies (HTTP-only, no browser)")
     print("=" * 60)
-
-    # Check if playwright is installed
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print("\n❌ Playwright not installed!")
-        print("Install with: uv pip install playwright")
-        print("Then run: playwright install chromium")
-        return 1
 
     # Check services
     if not check_services():
         print("\n❌ Services not running!")
         return 1
 
-    # Check if --headless=no is in args
-    headless = True
-    if "--headless=no" in sys.argv:
-        headless = False
-        sys.argv.remove("--headless=no")
+    debug = "--debug" in sys.argv
 
-    helper = AuthenticationHelper(headless=headless)
+    authenticator = OIDCAuthenticator(debug=debug)
 
     test_users = {
         "alice": {"email": "alice@example.com", "password": "password"},
@@ -224,7 +211,7 @@ def get_cookies():
     print("\n▶ Logging in test users...")
     print()
 
-    cookies = helper.get_all_test_user_cookies(test_users)
+    cookies = authenticator.get_all_user_cookies(test_users)
 
     # Show results
     print("\n" + "=" * 60)

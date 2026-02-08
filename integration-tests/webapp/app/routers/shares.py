@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi_topaz import require_policy_allowed
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
@@ -27,8 +27,7 @@ class ShareResponse(BaseModel):
     user_id: str
     permission: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -131,7 +130,7 @@ async def delete_share(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _: None = Depends(require_policy_allowed(topaz_config, "webapp.api.shares")),
+    _: None = Depends(require_policy_allowed(topaz_config, "webapp.DELETE.api.shares.__share_id")),
 ):
     """Remove share."""
     share = db.query(Share).filter(Share.id == share_id).first()

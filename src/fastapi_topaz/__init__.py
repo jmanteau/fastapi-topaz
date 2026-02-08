@@ -9,12 +9,11 @@ from ._defaults import (
     StringMapper,
 )
 from .audit import AuditEvent, AuditLogger
+from .cache import DecisionCache
 from .circuit_breaker import CircuitBreaker, CircuitState, CircuitStatus
+from .config import HierarchyResult, TopazConfig
 from .connection_pool import ConnectionPool, PoolStatus
 from .dependencies import (
-    DecisionCache,
-    HierarchyResult,
-    TopazConfig,
     filter_authorized_resources,
     get_authorized_resource,
     require_policy_allowed,

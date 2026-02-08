@@ -3,8 +3,14 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi_topaz import require_policy_allowed, require_rebac_allowed
-from pydantic import BaseModel
+from fastapi_topaz import (
+    filter_authorized_resources,
+    get_authorized_resource,
+    require_policy_allowed,
+    require_policy_auto,
+    require_rebac_allowed,
+)
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
@@ -33,16 +39,14 @@ class UserInfo(BaseModel):
     name: str
     email: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ShareInfo(BaseModel):
     user: UserInfo
     permission: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentResponse(BaseModel):
@@ -53,8 +57,7 @@ class DocumentResponse(BaseModel):
     folder_id: int | None
     is_public: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PermissionsInfo(BaseModel):
@@ -74,8 +77,7 @@ class DocumentDetailResponse(BaseModel):
     is_public: bool
     shares: list[ShareInfo]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentListItem(BaseModel):
@@ -88,8 +90,7 @@ class DocumentListItem(BaseModel):
     shares: list[ShareInfo]
     permissions: PermissionsInfo
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 def _get_permissions(document: Document, user_id: str) -> PermissionsInfo:
@@ -152,7 +153,7 @@ async def create_document(
     data: DocumentCreate,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _: None = Depends(require_policy_allowed(topaz_config, "webapp.api.documents")),
+    _: None = Depends(require_policy_auto(topaz_config)),
 ) -> DocumentResponse:
     """Create new document. Requires POST.api.documents policy."""
     document = Document(
@@ -176,17 +177,13 @@ async def get_document(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_rebac_allowed(topaz_config, "document", "can_read")),
 ) -> DocumentDetailResponse:
     """Get document by ID with owner and permissions info."""
-    # First check if document exists
     document = db.query(Document).filter(Document.id == id).first()
 
     if not document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-
-    # Now check authorization (document exists, so resource_context_provider will have data)
-    from fastapi_topaz import require_rebac_allowed
-    await require_rebac_allowed(topaz_config, "document", "can_read")(request)
 
     # Build response with owner and shares
     return DocumentDetailResponse(
@@ -275,30 +272,41 @@ async def get_document_permissions(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> PermissionsResponse:
-    """Get current user's effective permissions on a document."""
+    """Get current user's effective permissions on a document via Topaz."""
     document = db.query(Document).filter(Document.id == id).first()
 
     if not document:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    is_owner = document.owner_id == current_user.id
-
-    # Check each permission via policy
-    # For simplicity, derive from ownership and shares
-    user_share = next(
-        (s for s in document.shares if s.user_id == current_user.id),
-        None
+    # Use Topaz to check all permissions concurrently
+    permissions = await topaz_config.check_relations(
+        request,
+        object_type="document",
+        object_id=str(id),
+        relations=["can_read", "can_write", "can_delete", "can_share"],
     )
-
-    can_read = is_owner or document.is_public or user_share is not None
-    can_write = is_owner or (user_share and user_share.permission == "write")
-    can_delete = is_owner
-    can_share = is_owner
 
     return PermissionsResponse(
-        can_read=can_read,
-        can_write=can_write,
-        can_delete=can_delete,
-        can_share=can_share,
-        is_owner=is_owner,
+        can_read=permissions.get("can_read", False),
+        can_write=permissions.get("can_write", False),
+        can_delete=permissions.get("can_delete", False),
+        can_share=permissions.get("can_share", False),
+        is_owner=document.owner_id == current_user.id,
     )
+
+
+@router.get("/{id}/can-read")
+async def check_can_read(
+    id: int,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    """Check if user can read a document (non-raising). Uses is_allowed()."""
+    document = db.query(Document).filter(Document.id == id).first()
+
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    allowed = await topaz_config.is_allowed(request, f"webapp.GET.api.documents.__id")
+    return {"document_id": id, "can_read": allowed}

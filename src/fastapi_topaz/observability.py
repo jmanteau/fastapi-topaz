@@ -16,7 +16,12 @@ __all__ = ["PrometheusMetrics", "OTelTracing"]
 
 # Try to import prometheus_client (optional)
 try:
-    from prometheus_client import REGISTRY, Counter, Gauge, Histogram  # type: ignore[import-not-found]
+    from prometheus_client import (  # type: ignore[import-not-found]
+        REGISTRY,
+        Counter,
+        Gauge,
+        Histogram,
+    )
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
@@ -329,10 +334,8 @@ class OTelTracing:
                 str(resource_context),
             )
 
-        if decision == "denied":
-            span.set_status(Status(StatusCode.OK))
-        else:
-            span.set_status(Status(StatusCode.OK))
+        span.set_attribute(f"{self.span_name_prefix}.denied", decision == "denied")
+        span.set_status(Status(StatusCode.OK))
 
         span.end()
 

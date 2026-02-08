@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,10 +13,37 @@ from app.config import settings
 from app.database import get_db
 from app.models import User
 from app.routers import documents, folders, shares
+from app.topaz_integration import topaz_config
+from fastapi_topaz import TopazMiddleware, skip_middleware
 
-app = FastAPI(title="FastAPI-Aserto Test Webapp")
 
-# Middleware
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle."""
+    yield
+    # Shutdown: clean up Topaz resources
+    await topaz_config.close()
+
+
+app = FastAPI(title="FastAPI-Topaz Test Webapp", lifespan=lifespan)
+
+# Middleware (order matters: last added = outermost = runs first)
+# SessionMiddleware must be outermost so session is available to TopazMiddleware
+app.add_middleware(
+    TopazMiddleware,
+    config=topaz_config,
+    exclude_paths=[
+        r"^/$",
+        r"^/health$",
+        r"^/login$",
+        r"^/logout$",
+        r"^/auth/.*",
+        r"^/static/.*",
+        r"^/docs.*",
+        r"^/openapi.json$",
+    ],
+    on_missing_identity="deny",
+)
 app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
 
 # Static files and templates
@@ -80,6 +109,7 @@ async def logout(request: Request):
 
 
 @app.get("/health")
+@skip_middleware
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}

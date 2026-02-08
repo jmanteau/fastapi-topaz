@@ -16,7 +16,8 @@ from fastapi import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Match
 
-from .dependencies import TopazConfig, _resolve_policy_path
+from ._policy import _resolve_policy_path
+from .config import TopazConfig
 
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
@@ -169,6 +170,10 @@ class TopazMiddleware:
         route_path = getattr(route, "path", path)
         policy_path = _resolve_policy_path(self.config.policy_path_root, method, route_path)
 
+        # Inject path_params into scope so Request.path_params works
+        # in identity_provider and resource_context_provider
+        scope["path_params"] = path_params
+
         # Create request for identity extraction
         request = Request(scope, receive)
 
@@ -200,7 +205,8 @@ class TopazMiddleware:
             allowed = await self.config.check_decision(
                 request, policy_path, "allowed", resource_context or None
             )
-        except Exception:
+        except Exception as e:
+            logger.error(f"Authorization check failed in middleware: {type(e).__name__}: {e}")
             allowed = False
 
         latency_ms = (time.monotonic() - start_time) * 1000

@@ -6,7 +6,7 @@ from collections.abc import Generator
 import httpx
 import pytest
 
-from tests.integration.auth_helper import AuthenticationHelper, load_cookies_from_env
+from tests.integration.auth_helper import OIDCAuthenticator, load_cookies_from_env
 
 
 @pytest.fixture(scope="session")
@@ -74,17 +74,16 @@ def session_cookies(
         print("\n✓ Using session cookies from environment variables")
         return cookies
 
-    # Otherwise, automatically login users
+    # Otherwise, automatically login users via HTTP
     print("\n⚠ Session cookies not found in environment")
-    print("Attempting automatic login with browser automation...")
+    print("Attempting automatic login via HTTP (no browser)...")
 
-    helper = AuthenticationHelper(
+    authenticator = OIDCAuthenticator(
         webapp_url=base_url,
         authentik_url=authentik_url,
-        headless=os.getenv("HEADLESS_BROWSER", "true").lower() == "true",
     )
 
-    cookies = helper.get_all_test_user_cookies(test_users)
+    cookies = authenticator.get_all_user_cookies(test_users)
 
     # Check if we got all cookies
     missing = [name for name, cookie in cookies.items() if not cookie]
@@ -173,14 +172,3 @@ def charlie_client(
     client.close()
 
 
-@pytest.fixture(scope="session")
-def playwright_browser():
-    """Shared playwright browser for tests that need it."""
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=os.getenv("HEADLESS_BROWSER", "true").lower() == "true"
-        )
-        yield browser
-        browser.close()
