@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from aserto.client import AuthorizerOptions, Identity, IdentityType
 
+from fastapi_topaz._policy import normalize_hyphens
 from fastapi_topaz.cache import DecisionCache
 from fastapi_topaz.config import TopazConfig
 
@@ -121,3 +122,33 @@ class TestLocalsAntiPatternFix:
             assert result is True
         finally:
             TopazConfig.create_client = original
+
+
+class TestPolicyPathNormalizer:
+    """Tests for policy_path_normalizer on TopazConfig."""
+
+    def test_policy_path_normalizer_default_none(self):
+        """Default value of policy_path_normalizer should be None."""
+        config = _make_config()
+        assert config.policy_path_normalizer is None
+
+    def test_policy_path_for_uses_normalizer(self):
+        """policy_path_for() should apply normalizer when set."""
+        config = _make_config(policy_path_normalizer=normalize_hyphens)
+        result = config.policy_path_for("GET", "/aircraft-programs")
+        assert result == "test.GET.aircraft_programs"
+
+    def test_policy_path_for_without_normalizer(self):
+        """policy_path_for() should leave hyphens when no normalizer set."""
+        config = _make_config()
+        result = config.policy_path_for("GET", "/aircraft-programs")
+        assert result == "test.GET.aircraft-programs"
+
+    def test_policy_path_normalizer_custom_callable(self):
+        """Custom callable normalizer should be applied."""
+        config = _make_config(
+            policy_path_normalizer=lambda p: p.replace("-", "_").replace(".", "_", 1),
+        )
+        # Just verifying it's called - the exact transform doesn't matter
+        result = config.policy_path_for("GET", "/test-path")
+        assert "-" not in result

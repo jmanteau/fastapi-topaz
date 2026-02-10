@@ -29,6 +29,7 @@ from fastapi_topaz import (
     SkipMiddleware,
     TopazConfig,
     TopazMiddleware,
+    normalize_hyphens,
     skip_middleware,
 )
 
@@ -461,3 +462,39 @@ class TestMiddlewareErrorHandling:
         response = client.get("/test")
         # Middleware fails safe - denies access when authorizer unavailable
         assert response.status_code == 403
+
+
+class TestPolicyPathNormalizer:
+    """
+    Middleware integration with policy_path_normalizer.
+
+    When TopazConfig has a policy_path_normalizer set, the middleware
+    should apply it when generating policy paths from routes.
+    """
+
+    def test_normalizer_applied_to_policy_path(self, authorizer_options, identity_provider, monkeypatch):
+        """Middleware should pass normalizer through to _resolve_policy_path."""
+        mock_client = Mock()
+        mock_client.decisions = AsyncMock(return_value={"allowed": True})
+        monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock_client)
+
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test-policy",
+            policy_path_normalizer=normalize_hyphens,
+        )
+
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=config)
+
+        @app.get("/aircraft-programs")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        client.get("/aircraft-programs")
+
+        call_kwargs = mock_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.GET.aircraft_programs"

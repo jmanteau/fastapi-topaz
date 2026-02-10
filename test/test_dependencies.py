@@ -38,6 +38,7 @@ from fastapi_topaz import (
     TopazConfig,
     filter_authorized_resources,
     get_authorized_resource,
+    normalize_hyphens,
     require_policy_allowed,
     require_policy_auto,
     require_rebac_allowed,
@@ -419,6 +420,29 @@ class TestRequirePolicyAuto:
 
         client.delete("/items/99")
         assert patch_client.decisions.call_args.kwargs["policy_path"] == "testapp.DELETE.items.__id"
+
+    def test_auto_applies_normalizer(self, authorizer_options, identity_provider, patch_client):
+        """require_policy_auto should apply policy_path_normalizer from config."""
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            policy_path_normalizer=normalize_hyphens,
+        )
+
+        app = FastAPI()
+
+        @app.get("/aircraft-programs")
+        def route(request: Request, _=Depends(require_policy_auto(config))):
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        response = client.get("/aircraft-programs")
+        assert response.status_code == 200
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.GET.aircraft_programs"
 
 
 class TestRequirePolicyAllowed:

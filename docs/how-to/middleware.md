@@ -90,6 +90,37 @@ Routes automatically map to policy paths:
 
 Path parameters become `__paramname`.
 
+### Normalizing Hyphenated Paths
+
+Rego identifiers cannot contain hyphens. If your API uses hyphenated paths
+like `/aircraft-programs`, the generated policy path `myapp.GET.aircraft-programs`
+will be invalid.
+
+Use `policy_path_normalizer` to fix this:
+
+```python
+from fastapi_topaz import TopazConfig, normalize_hyphens
+
+config = TopazConfig(
+    ...
+    policy_path_normalizer=normalize_hyphens,
+)
+```
+
+| Route | Without normalizer | With `normalize_hyphens` |
+|-------|--------------------|--------------------------|
+| `/aircraft-programs` | myapp.GET.aircraft-programs | myapp.GET.aircraft_programs |
+| `/user-docs/{doc-id}` | myapp.GET.user-docs.__doc-id | myapp.GET.user_docs.__doc_id |
+
+For custom normalization, pass any `Callable[[str], str]`:
+
+```python
+config = TopazConfig(
+    ...
+    policy_path_normalizer=lambda path: path.replace("-", "_").lower(),
+)
+```
+
 ## Combining with Dependencies
 
 Middleware for broad protection, dependencies for specific checks:

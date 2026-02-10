@@ -8,6 +8,7 @@ from ._defaults import (
     ResourceMapper,
     StringMapper,
 )
+from ._policy import normalize_hyphens
 from .audit import AuditEvent, AuditLogger
 from .cache import DecisionCache
 from .circuit_breaker import CircuitBreaker, CircuitState, CircuitStatus
@@ -30,6 +31,8 @@ __all__ = [
     "HierarchyResult",
     "TopazConfig",
     "AuthorizationError",
+    # Policy utilities
+    "normalize_hyphens",
     # Aserto client re-exports
     "AuthorizerOptions",
     "Identity",

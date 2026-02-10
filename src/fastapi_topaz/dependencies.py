@@ -125,7 +125,10 @@ def require_policy_auto(
         method = request.method
 
         # Generate policy path
-        policy_path = _resolve_policy_path(config.policy_path_root, method, route_path)
+        policy_path = _resolve_policy_path(
+            config.policy_path_root, method, route_path,
+            config.policy_path_normalizer,
+        )
 
         identity = config.identity_provider(request)
 

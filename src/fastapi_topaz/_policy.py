@@ -1,6 +1,8 @@
 """Shared policy path utilities used by dependencies and codegen."""
 from __future__ import annotations
 
+from typing import Callable
+
 
 def _policy_path_heuristic(path: str) -> str:
     """
@@ -36,7 +38,12 @@ def _policy_path_heuristic(path: str) -> str:
     return "." + ".".join(result_parts)
 
 
-def _resolve_policy_path(root: str, method: str, path: str) -> str:
+def _resolve_policy_path(
+    root: str,
+    method: str,
+    path: str,
+    policy_path_normalizer: Callable[[str], str] | None = None,
+) -> str:
     """
     Build a full policy path from root, HTTP method, and URL path.
 
@@ -44,9 +51,23 @@ def _resolve_policy_path(root: str, method: str, path: str) -> str:
         root: Policy path root (e.g., "myapp")
         method: HTTP method (e.g., "GET", "POST")
         path: URL path pattern (e.g., "/documents/{id}")
+        policy_path_normalizer: Optional callable to transform the generated
+            policy path (e.g., replace hyphens with underscores)
 
     Returns:
         Full policy path (e.g., "myapp.GET.documents.__id")
     """
     heuristic = _policy_path_heuristic(path)
-    return f"{root}.{method}{heuristic}"
+    result = f"{root}.{method}{heuristic}"
+    if policy_path_normalizer is not None:
+        result = policy_path_normalizer(result)
+    return result
+
+
+def normalize_hyphens(path: str) -> str:
+    """Replace hyphens with underscores in a policy path.
+
+    Useful when REST API paths contain hyphens (e.g., /aircraft-programs)
+    that are invalid in Rego identifiers.
+    """
+    return path.replace("-", "_")

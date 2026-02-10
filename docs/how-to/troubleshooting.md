@@ -143,6 +143,34 @@ policy "myapp.GET.documents" not found
    GET.documents.allowed := true
    ```
 
+### Hyphens in Policy Path (Invalid Rego Identifier)
+
+**Symptoms:**
+Topaz returns errors about invalid policy paths, or policies don't match,
+when your API routes contain hyphens (e.g., `/aircraft-programs`).
+
+**Cause:**
+Rego identifiers cannot contain hyphens. The `-` character is parsed as
+the minus operator. Route `/aircraft-programs` generates policy path
+`myapp.GET.aircraft-programs`, which is invalid Rego.
+
+**Solution:**
+
+Use `policy_path_normalizer` to replace hyphens with underscores:
+
+```python
+from fastapi_topaz import TopazConfig, normalize_hyphens
+
+config = TopazConfig(
+    ...
+    policy_path_normalizer=normalize_hyphens,
+)
+
+# Verify:
+config.policy_path_for("GET", "/aircraft-programs")
+# → "myapp.GET.aircraft_programs"
+```
+
 ### ReBAC Always Denied
 
 **Symptoms:** ReBAC checks always return false, even for owners.

@@ -168,7 +168,10 @@ class TopazMiddleware:
 
         # Generate policy path
         route_path = getattr(route, "path", path)
-        policy_path = _resolve_policy_path(self.config.policy_path_root, method, route_path)
+        policy_path = _resolve_policy_path(
+            self.config.policy_path_root, method, route_path,
+            self.config.policy_path_normalizer,
+        )
 
         # Inject path_params into scope so Request.path_params works
         # in identity_provider and resource_context_provider

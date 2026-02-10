@@ -95,6 +95,8 @@ class TopazConfig:
         policy_instance_name: Name of policy instance to evaluate
         policy_instance_label: Label for policy instance (defaults to name)
         resource_context_provider: Function to provide additional context
+        policy_path_normalizer: Optional callable to transform generated policy
+            paths (e.g., replace hyphens with underscores for valid Rego identifiers)
         decision_cache: Optional cache for authorization decisions
         max_concurrent_checks: Max concurrent authorization checks for bulk operations (default: 10)
         circuit_breaker: Optional circuit breaker for graceful degradation
@@ -113,6 +115,7 @@ class TopazConfig:
         policy_instance_name: str,
         policy_instance_label: str | None = None,
         resource_context_provider: Callable[[Request], ResourceContext] | None = None,
+        policy_path_normalizer: Callable[[str], str] | None = None,
         decision_cache: DecisionCache | None = None,
         max_concurrent_checks: int = 10,
         circuit_breaker: CircuitBreaker | None = None,
@@ -127,6 +130,7 @@ class TopazConfig:
         self.policy_instance_name = policy_instance_name
         self.policy_instance_label = policy_instance_label or policy_instance_name
         self.resource_context_provider = resource_context_provider
+        self.policy_path_normalizer = policy_path_normalizer
         self.decision_cache = decision_cache
         self.max_concurrent_checks = max_concurrent_checks
         self.circuit_breaker = circuit_breaker
@@ -428,7 +432,9 @@ class TopazConfig:
             >>> config.policy_path_for("GET", "/documents/{id}")
             "myapp.GET.documents.__id"
         """
-        return _resolve_policy_path(self.policy_path_root, method, route_path)
+        return _resolve_policy_path(
+            self.policy_path_root, method, route_path, self.policy_path_normalizer
+        )
 
     async def is_allowed(
         self,
