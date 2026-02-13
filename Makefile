@@ -11,7 +11,7 @@
 .PHONY: int-shell int-topaz-shell int-topaz-reload int-auth-password int-certs
 .PHONY: int-tf-init int-tf-plan int-tf-apply int-tf-destroy
 .PHONY: int-lint int-lint-fix
-.PHONY: e2e e2e-fast e2e-alice e2e-bob e2e-cookies e2e-clean
+.PHONY: e2e e2e-fast e2e-alice e2e-bob e2e-cookies e2e-clean _require-infra
 
 # Colors
 RESET := \033[0m
@@ -298,19 +298,54 @@ int-lint-fix: ## Fix linting in integration tests
 # ==============================================================================
 ##@ E2E Tests
 # ==============================================================================
+_require-infra:
+	@echo "$(BLUE)Checking infrastructure...$(RESET)"
+	@cd $(INT_DIR) && docker-compose ps --status running 2>/dev/null | grep -q webapp || \
+		{ echo "$(YELLOW)Error: Docker services not running. Run 'make int-setup' or 'make int-up' first.$(RESET)"; exit 1; }
+	@printf "  Webapp:     "; \
+	for i in 1 2 3 4 5 6; do \
+		if curl -sf http://localhost:8000/health >/dev/null 2>&1; then \
+			echo "$(GREEN)healthy$(RESET)"; break; \
+		fi; \
+		if [ $$i -eq 6 ]; then \
+			echo "$(YELLOW)unhealthy$(RESET)"; \
+			echo "$(YELLOW)Error: Webapp not healthy at http://localhost:8000. Run 'make int-up' and wait for services to start.$(RESET)"; \
+			exit 1; \
+		fi; \
+		printf "."; sleep 5; \
+	done
+	@printf "  Authentik:  "; \
+	for i in 1 2 3 4 5 6; do \
+		if curl -sf http://localhost:9000/-/health/ready/ >/dev/null 2>&1; then \
+			echo "$(GREEN)healthy$(RESET)"; break; \
+		fi; \
+		if [ $$i -eq 6 ]; then \
+			echo "$(YELLOW)unhealthy$(RESET)"; \
+			echo "$(YELLOW)Error: Authentik not healthy at http://localhost:9000. Run 'make int-up' and wait for services to start.$(RESET)"; \
+			exit 1; \
+		fi; \
+		printf "."; sleep 5; \
+	done
+	@printf "  Terraform:  "; \
+	test -f $(TF_DIR)/terraform.tfstate && \
+		echo "$(GREEN)applied$(RESET)" || \
+		{ echo "$(YELLOW)missing$(RESET)"; \
+		  echo "$(YELLOW)Error: Terraform not applied (no tfstate found). Run 'make int-tf-init && make int-tf-apply' first.$(RESET)"; exit 1; }
+	@echo "$(GREEN)Infrastructure ready$(RESET)"
+
 e2e-init: ## Init e2e tests
 	cd $(E2E_DIR) && uv sync
 
-e2e: ## Run all e2e tests
+e2e: _require-infra ## Run all e2e tests
 	cd $(E2E_DIR) && uv run python run_tests.py
 
-e2e-fast: ## Run e2e tests with cached cookies
+e2e-fast: _require-infra ## Run e2e tests with cached cookies
 	cd $(E2E_DIR) && uv run python run_tests.py
 
-e2e-alice: ## Run Alice workflow tests
+e2e-alice: _require-infra ## Run Alice workflow tests
 	cd $(E2E_DIR) && uv run python run_tests.py alice
 
-e2e-bob: ## Run Bob workflow tests
+e2e-bob: _require-infra ## Run Bob workflow tests
 	cd $(E2E_DIR) && uv run python run_tests.py bob
 
 e2e-cookies: ## Get session cookies for testing

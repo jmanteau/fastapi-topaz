@@ -3,13 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi_topaz import (
-    filter_authorized_resources,
-    get_authorized_resource,
-    require_policy_allowed,
-    require_policy_auto,
-    require_rebac_allowed,
-)
+from fastapi_topaz import require_rebac_allowed
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -153,7 +147,6 @@ async def create_document(
     data: DocumentCreate,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _: None = Depends(require_policy_auto(topaz_config)),
 ) -> DocumentResponse:
     """Create new document. Requires POST.api.documents policy."""
     document = Document(

@@ -5,14 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] - 20260210
+## [1.1.0]
+
+### Added
+
+- Policy resolution chain (`PolicyGroup`, `default_policy`, `policies_dir`) so multiple routes can share a single policy instead of requiring one `.rego` file per route
+- `generate-rights-matrix` CLI command to visualise which policy each route resolves to, useful for auditing and onboarding
+- `policy_resolution_source` in audit events to trace how each authorization decision was routed
+- `policy_diff` now understands the resolution chain, avoiding false "missing" reports for routes covered by a group or default policy
+- Early validation of `PolicyGroup` regex patterns and startup warnings for missing policy files to catch misconfigurations before they hit production
+
+### Changed
+
+- Integration test webapp now uses the resolution chain, replacing per-route dependency injections with middleware-level policy routing
+- E2E / integration Make targets fail fast with clear errors when infrastructure is not running
+
+## [1.0.1] - 2026-02-10
 
 ### Added
 
 - `policy_path_normalizer` optional callback on `TopazConfig` to transform generated policy paths (e.g., replace hyphens with underscores for valid Rego identifiers)
 - `normalize_hyphens()` built-in normalizer for the common hyphen-to-underscore case
 
-## [1.0.0] - 2025-02-08
+## [1.0.0] - 2026-02-08
 
 ### Changed
 
@@ -99,5 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - aserto >= 0.32.2
 - Python >= 3.9
 
+[Unreleased]: https://github.com/jmanteau/fastapi-topaz/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/jmanteau/fastapi-topaz/releases/tag/v1.0.1
 [1.0.0]: https://github.com/jmanteau/fastapi-topaz/releases/tag/v1.0.0
 [0.1.0]: https://github.com/jmanteau/fastapi-topaz/releases/tag/v0.1.0

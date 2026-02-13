@@ -18,6 +18,7 @@ from fastapi_topaz import (
     ResourceContext,
     TopazConfig,
 )
+from fastapi_topaz.config import PolicyGroup
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,19 @@ topaz_config = TopazConfig(
     policy_instance_name=settings.topaz_policy_instance_name,
     policy_instance_label=settings.topaz_policy_instance_label,
     resource_context_provider=resource_context_provider,
+    # Resolution chain: routes without explicit .rego files use this default
+    default_policy="webapp.defaults.authenticated",
+    # Policy groups: URL-pattern-based policy routing (first match wins)
+    policy_groups=[
+        PolicyGroup(
+            url_pattern=r"^/api/shares",
+            policy_path="webapp.defaults.authenticated",
+        ),
+    ],
     decision_cache=DecisionCache(ttl_seconds=60, max_size=1000),
     circuit_breaker=CircuitBreaker(failure_threshold=5, recovery_timeout=30, fallback="cache_then_deny", serve_stale_cache=True, stale_cache_ttl=300),
     audit_logger=AuditLogger(),
 )
+
+# Policies directory for explicit policy scanning (hierarchical structure)
+POLICIES_DIR = Path(__file__).parent.parent.parent / "infra" / "policies"

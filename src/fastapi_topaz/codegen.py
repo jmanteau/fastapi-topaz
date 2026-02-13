@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from ._policy import _resolve_policy_path
+from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -20,10 +21,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "generate_policies",
+    "generate_rights_matrix",
     "policy_diff",
     "PolicyTemplate",
     "PolicyDiff",
     "MissingPolicy",
+    "RouteResolution",
     "ValidationResult",
 ]
 
@@ -57,6 +60,8 @@ class PolicyDiff:
     missing: list[MissingPolicy] = field(default_factory=list)
     orphaned: list[str] = field(default_factory=list)
     valid: list[str] = field(default_factory=list)
+    group_covered: list[str] = field(default_factory=list)
+    default_covered: list[str] = field(default_factory=list)
 
     @property
     def has_issues(self) -> bool:
@@ -250,48 +255,72 @@ def policy_diff(
     """
     Compare FastAPI routes against existing policy files.
 
+    When ``config`` has ``policy_groups`` or ``default_policy`` set, routes
+    without an explicit ``.rego`` file are classified as *group-covered* or
+    *default-covered* instead of *missing* — provided the referenced policy
+    file actually exists in *policies_dir*.
+
     Args:
         app: FastAPI application instance
         config: TopazConfig with policy_path_root
         policies_dir: Directory containing .rego policy files
 
     Returns:
-        PolicyDiff with missing, orphaned, and valid policies
+        PolicyDiff with missing, orphaned, valid, group_covered, and
+        default_covered policies
     """
-    policies_path = Path(policies_dir)
     routes = scan_routes(app, config.policy_path_root)
     route_policies = {r["policy_path"] for r in routes}
     route_policies.add(f"{config.policy_path_root}.check")  # ReBAC policy
 
-    # Find existing policies
-    existing_policies: set[str] = set()
-    if policies_path.exists():
-        for rego_file in policies_path.rglob("*.rego"):
-            relative = rego_file.relative_to(policies_path)
-            policy_path = str(relative.with_suffix("")).replace("/", ".")
-            existing_policies.add(policy_path)
+    existing_policies = scan_policy_files(policies_dir)
+
+    # Pre-compile group patterns for matching
+    compiled_groups = _compile_policy_groups(config.policy_groups)
 
     diff = PolicyDiff()
 
-    # Find missing policies
     for route_info in routes:
         policy_path = route_info["policy_path"]
-        if policy_path not in existing_policies:
-            diff.missing.append(
-                MissingPolicy(
-                    policy_path=policy_path,
-                    method=route_info["method"],
-                    path=route_info["path"],
-                    route_pattern=route_info["route_pattern"],
-                    auth_type=route_info["auth_type"],
-                )
-            )
-        else:
+        route_path = route_info["route_pattern"]
+
+        if policy_path in existing_policies:
             diff.valid.append(policy_path)
+            continue
+
+        # Check if covered by a policy group
+        group_match = False
+        for compiled_pattern, group_policy_path in compiled_groups:
+            if compiled_pattern.match(route_path) and group_policy_path in existing_policies:
+                diff.group_covered.append(policy_path)
+                group_match = True
+                break
+
+        if group_match:
+            continue
+
+        # Check if covered by default policy
+        if config.default_policy and config.default_policy in existing_policies:
+            diff.default_covered.append(policy_path)
+            continue
+
+        diff.missing.append(
+            MissingPolicy(
+                policy_path=policy_path,
+                method=route_info["method"],
+                path=route_info["path"],
+                route_pattern=route_info["route_pattern"],
+                auth_type=route_info["auth_type"],
+            )
+        )
 
     # Check ReBAC policy
     rebac_path = f"{config.policy_path_root}.check"
-    if rebac_path not in existing_policies:
+    if rebac_path in existing_policies:
+        diff.valid.append(rebac_path)
+    elif config.default_policy and config.default_policy in existing_policies:
+        diff.default_covered.append(rebac_path)
+    else:
         diff.missing.append(
             MissingPolicy(
                 policy_path=rebac_path,
@@ -301,8 +330,6 @@ def policy_diff(
                 auth_type="rebac",
             )
         )
-    else:
-        diff.valid.append(rebac_path)
 
     # Find orphaned policies
     for policy in existing_policies:
@@ -310,3 +337,125 @@ def policy_diff(
             diff.orphaned.append(policy)
 
     return diff
+
+
+@dataclass(frozen=True)
+class RouteResolution:
+    """Resolution result for a single route — used by :func:`generate_rights_matrix`."""
+
+    method: str
+    route_pattern: str
+    specific_policy_path: str
+    resolved_policy_path: str
+    resolution_source: str  # "explicit" | "group" | "default" | "generated"
+    matched_group_pattern: str | None
+    policy_file_exists: bool
+
+
+def generate_rights_matrix(
+    app: FastAPI,
+    config: TopazConfig,
+    policies_dir: str | Path | None = None,
+    output_file: str | Path | None = None,
+) -> list[RouteResolution]:
+    """
+    Generate a comprehensive rights matrix resolving every route through the
+    policy resolution chain.
+
+    Produces a list of :class:`RouteResolution` entries and optionally writes
+    a Markdown summary to *output_file*.
+
+    Args:
+        app: FastAPI application instance
+        config: TopazConfig with policy_path_root (and optional
+            default_policy / policy_groups)
+        policies_dir: Directory containing ``.rego`` policy files (optional)
+        output_file: Path to write Markdown output (optional)
+
+    Returns:
+        List of RouteResolution entries for every discovered route.
+    """
+    routes = scan_routes(app, config.policy_path_root)
+    existing: set[str] = scan_policy_files(policies_dir) if policies_dir else set()
+
+    compiled_groups = _compile_policy_groups(config.policy_groups)
+
+    results: list[RouteResolution] = []
+
+    for route_info in routes:
+        specific = route_info["policy_path"]
+        route_path = route_info["route_pattern"]
+        resolved = specific
+        source = "generated"
+        matched_pattern: str | None = None
+
+        # Resolution chain
+        if policies_dir is not None and specific in existing:
+            resolved, source = specific, "explicit"
+        else:
+            for compiled_pattern, group_pp in compiled_groups:
+                if compiled_pattern.match(route_path):
+                    resolved, source = group_pp, "group"
+                    matched_pattern = compiled_pattern.pattern
+                    break
+            if source == "generated" and config.default_policy:
+                resolved, source = config.default_policy, "default"
+
+        results.append(RouteResolution(
+            method=route_info["method"],
+            route_pattern=route_info["path"],
+            specific_policy_path=specific,
+            resolved_policy_path=resolved,
+            resolution_source=source,
+            matched_group_pattern=matched_pattern,
+            policy_file_exists=resolved in existing,
+        ))
+
+    if output_file:
+        _write_rights_matrix_markdown(
+            results, config.policy_path_root, Path(output_file),
+        )
+
+    return results
+
+
+def _write_rights_matrix_markdown(
+    results: list[RouteResolution],
+    policy_root: str,
+    output_path: Path,
+) -> None:
+    """Write the rights matrix as a Markdown document."""
+    explicit = [r for r in results if r.resolution_source == "explicit"]
+    group = [r for r in results if r.resolution_source == "group"]
+    default = [r for r in results if r.resolution_source == "default"]
+    unresolved = [r for r in results if r.resolution_source == "generated"]
+
+    lines: list[str] = [
+        f"# Rights Matrix — {policy_root}",
+        f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+        "",
+        "## Summary",
+        f"- Total routes: {len(results)}",
+        f"- Explicit policies: {len(explicit)}",
+        f"- Group-covered: {len(group)}",
+        f"- Default-covered: {len(default)}",
+        f"- **Unresolved: {len(unresolved)}**",
+        "",
+        "## Routes by Resolution Source",
+        "",
+        "| Method | Route | Resolved Policy | Source | File Exists |",
+        "|--------|-------|-----------------|--------|-------------|",
+    ]
+
+    for r in sorted(results, key=lambda x: (x.route_pattern, x.method)):
+        source_label = r.resolution_source
+        if r.matched_group_pattern:
+            source_label = f"group ({r.matched_group_pattern})"
+        exists = "Y" if r.policy_file_exists else "N"
+        lines.append(
+            f"| {r.method} | {r.route_pattern} | "
+            f"{r.resolved_policy_path} | {source_label} | {exists} |"
+        )
+
+    lines.append("")
+    output_path.write_text("\n".join(lines))

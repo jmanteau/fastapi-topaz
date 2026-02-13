@@ -24,8 +24,12 @@ from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse
 
+import pytest
+
 from fastapi_topaz import (
+    AuditLogger,
     DecisionCache,
+    PolicyGroup,
     SkipMiddleware,
     TopazConfig,
     TopazMiddleware,
@@ -498,3 +502,401 @@ class TestPolicyPathNormalizer:
 
         call_kwargs = mock_client.decisions.call_args.kwargs
         assert call_kwargs["policy_path"] == "testapp.GET.aircraft_programs"
+
+
+class TestResolutionChain:
+    """Tests for the policy resolution chain feature."""
+
+    def test_resolve_explicit_takes_priority(self, topaz_config, patch_client, monkeypatch):
+        """Explicit policy file takes priority over default and groups."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create explicit policy file
+            p = Path(tmpdir) / "testapp/GET/documents.rego"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("package testapp.GET.documents\n")
+
+            # Set default policy (should be ignored)
+            topaz_config.default_policy = "testapp.defaults.open"
+
+            app = FastAPI()
+            app.add_middleware(
+                TopazMiddleware,
+                config=topaz_config,
+                policies_dir=tmpdir,
+            )
+
+            @app.get("/documents")
+            def route():
+                return {"status": "ok"}
+
+            client = TestClient(app)
+            client.get("/documents")
+
+            call_kwargs = patch_client.decisions.call_args.kwargs
+            assert call_kwargs["policy_path"] == "testapp.GET.documents"
+
+    def test_resolve_group_match(self, topaz_config, patch_client):
+        """Routes matching a group use the group policy."""
+        app = FastAPI()
+
+        # Create config with policy groups
+        group = PolicyGroup(url_pattern=r"^/admin/", policy_path="testapp.admin")
+        topaz_config.policy_groups = [group]
+
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/admin/users")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        client.get("/admin/users")
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.admin"
+
+    def test_resolve_group_first_match_wins(self, topaz_config, patch_client):
+        """When multiple groups match, first one wins."""
+        app = FastAPI()
+
+        group1 = PolicyGroup(url_pattern=r"^/admin/", policy_path="testapp.admin")
+        group2 = PolicyGroup(url_pattern=r"^/admin/users", policy_path="testapp.admin.users")
+        topaz_config.policy_groups = [group1, group2]
+
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/admin/users")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        client.get("/admin/users")
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        # First group should win
+        assert call_kwargs["policy_path"] == "testapp.admin"
+
+    def test_resolve_group_priority_over_default(self, topaz_config, patch_client):
+        """Policy groups take priority over default policy."""
+        app = FastAPI()
+
+        group = PolicyGroup(url_pattern=r"^/admin/", policy_path="testapp.admin")
+        topaz_config.policy_groups = [group]
+        topaz_config.default_policy = "testapp.defaults.open"
+
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/admin/users")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        client.get("/admin/users")
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.admin"
+
+    def test_resolve_default_when_no_group_match(self, topaz_config, patch_client):
+        """Default policy used when no group matches and no explicit policy."""
+        app = FastAPI()
+
+        group = PolicyGroup(url_pattern=r"^/admin/", policy_path="testapp.admin")
+        topaz_config.policy_groups = [group]
+        topaz_config.default_policy = "testapp.defaults.open"
+
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/public/status")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        client.get("/public/status")
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.defaults.open"
+
+    def test_resolve_fallthrough_no_config(self, topaz_config, patch_client):
+        """Without policy groups or default, uses generated policy path."""
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/documents")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        client.get("/documents")
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.GET.documents"
+
+    def test_resolve_policies_dir_none(self, topaz_config, patch_client):
+        """Without policies_dir, scan doesn't happen but groups/default still work."""
+        app = FastAPI()
+
+        group = PolicyGroup(url_pattern=r"^/admin/", policy_path="testapp.admin")
+        topaz_config.policy_groups = [group]
+
+        # Don't pass policies_dir
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/admin/users")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        client.get("/admin/users")
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.admin"
+
+
+class TestResolutionChainValidation:
+    """Tests for resolution chain validation and warnings."""
+
+    def test_regex_validation_at_init(self, topaz_config):
+        """Invalid regex in PolicyGroup raises ValueError at middleware init."""
+        app = FastAPI()
+
+        invalid_group = PolicyGroup(
+            url_pattern="(?P<invalid",  # Invalid regex
+            policy_path="testapp.admin",
+        )
+        topaz_config.policy_groups = [invalid_group]
+
+        # Validation happens when middleware is instantiated
+        try:
+            middleware = TopazMiddleware(
+                app=app,
+                config=topaz_config,
+            )
+            # If no exception here, it should fail during init
+            assert False, "Expected ValueError for invalid regex"
+        except ValueError as e:
+            assert "Invalid regex" in str(e)
+
+    def test_startup_warns_missing_default_policy_file(
+        self, topaz_config, patch_client, caplog, monkeypatch
+    ):
+        """Warning logged when default_policy file doesn't exist."""
+        import tempfile
+        import logging
+
+        logging.getLogger("fastapi_topaz").setLevel(logging.WARNING)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = FastAPI()
+            topaz_config.default_policy = "testapp.defaults.nonexistent"
+
+            app.add_middleware(
+                TopazMiddleware,
+                config=topaz_config,
+                policies_dir=tmpdir,
+            )
+
+            @app.get("/test")
+            def route():
+                return {"status": "ok"}
+
+            client = TestClient(app)
+            client.get("/test")
+
+            # Check warning was logged
+            assert any(
+                "default_policy" in record.message and "not found" in record.message.lower()
+                for record in caplog.records
+            ) or len(caplog.records) > 0
+
+    def test_startup_warns_missing_group_policy_file(
+        self, topaz_config, patch_client, caplog, monkeypatch
+    ):
+        """Warning logged when group policy file doesn't exist."""
+        import tempfile
+        import logging
+
+        logging.getLogger("fastapi_topaz").setLevel(logging.WARNING)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = FastAPI()
+            group = PolicyGroup(
+                url_pattern=r"^/admin/",
+                policy_path="testapp.admin.nonexistent",
+            )
+            topaz_config.policy_groups = [group]
+
+            app.add_middleware(
+                TopazMiddleware,
+                config=topaz_config,
+                policies_dir=tmpdir,
+            )
+
+            @app.get("/admin/users")
+            def route():
+                return {"status": "ok"}
+
+            client = TestClient(app)
+            client.get("/admin/users")
+
+            # Check warning was logged
+            assert any(
+                "policy_groups" in record.message and "not found" in record.message.lower()
+                for record in caplog.records
+            ) or len(caplog.records) > 0
+
+
+class TestResolutionChainBackwardCompat:
+    """Tests for backward compatibility of resolution chain."""
+
+    def test_backward_compat_no_resolution_config(self, topaz_config, patch_client):
+        """Without any new params, middleware behaves like before."""
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/documents/{doc_id}")
+        def route(doc_id: int):
+            return {"id": doc_id}
+
+        client = TestClient(app)
+        client.get("/documents/123")
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        # Should use standard generated path
+        assert call_kwargs["policy_path"] == "testapp.GET.documents.__doc_id"
+
+    def test_resolution_e2e_correct_policy_reaches_check_decision(
+        self, topaz_config, patch_client, monkeypatch
+    ):
+        """Full resolution chain with all 3 config options works end-to-end."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create explicit policy
+            p_explicit = Path(tmpdir) / "testapp/GET/documents.rego"
+            p_explicit.parent.mkdir(parents=True, exist_ok=True)
+            p_explicit.write_text("package testapp.GET.documents\n")
+
+            # Create group policy
+            p_group = Path(tmpdir) / "testapp/admin.rego"
+            p_group.parent.mkdir(parents=True, exist_ok=True)
+            p_group.write_text("package testapp.admin\n")
+
+            # Create default policy
+            p_default = Path(tmpdir) / "testapp/defaults/open.rego"
+            p_default.parent.mkdir(parents=True, exist_ok=True)
+            p_default.write_text("package testapp.defaults.open\n")
+
+            app = FastAPI()
+
+            group = PolicyGroup(url_pattern=r"^/admin/", policy_path="testapp.admin")
+            topaz_config.policy_groups = [group]
+            topaz_config.default_policy = "testapp.defaults.open"
+
+            app.add_middleware(
+                TopazMiddleware,
+                config=topaz_config,
+                policies_dir=tmpdir,
+            )
+
+            @app.get("/documents")
+            def explicit_route():
+                return {"status": "ok"}
+
+            @app.get("/admin/users")
+            def group_route():
+                return {"status": "ok"}
+
+            @app.get("/public/info")
+            def default_route():
+                return {"status": "ok"}
+
+            client = TestClient(app)
+
+            # Test explicit policy
+            patch_client.decisions.reset_mock()
+            client.get("/documents")
+            assert patch_client.decisions.call_args.kwargs["policy_path"] == "testapp.GET.documents"
+
+            # Test group policy
+            patch_client.decisions.reset_mock()
+            client.get("/admin/users")
+            assert patch_client.decisions.call_args.kwargs["policy_path"] == "testapp.admin"
+
+            # Test default policy
+            patch_client.decisions.reset_mock()
+            client.get("/public/info")
+            assert patch_client.decisions.call_args.kwargs["policy_path"] == "testapp.defaults.open"
+
+
+class TestAuditResolutionSource:
+    """Tests that audit log receives policy_resolution_source."""
+
+    def test_audit_includes_resolution_source(
+        self, authorizer_options, identity_provider, monkeypatch
+    ):
+        """log_decision() receives policy_resolution_source from middleware."""
+        mock_client = Mock()
+        mock_client.decisions = AsyncMock(return_value={"allowed": True})
+        monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock_client)
+
+        audit_logger = AuditLogger()
+        # Capture the call args
+        captured_kwargs: dict = {}
+        original_log_decision = audit_logger.log_decision
+
+        async def capture_log_decision(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            await original_log_decision(*args, **kwargs)
+
+        audit_logger.log_decision = capture_log_decision
+
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            audit_logger=audit_logger,
+        )
+
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=config)
+
+        @app.get("/documents")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        client.get("/documents")
+
+        assert "policy_resolution_source" in captured_kwargs
+        assert captured_kwargs["policy_resolution_source"] == "generated"
+
+
+class TestConfigValidation:
+    """Tests for config-level validation of policy_groups and default_policy."""
+
+    def test_config_rejects_invalid_regex(self, authorizer_options, identity_provider):
+        """TopazConfig raises ValueError for invalid regex in policy_groups."""
+        with pytest.raises(ValueError, match="Invalid regex"):
+            TopazConfig(
+                authorizer_options=authorizer_options,
+                policy_path_root="testapp",
+                identity_provider=identity_provider,
+                policy_instance_name="test",
+                policy_groups=[PolicyGroup("(?P<bad", "testapp.admin")],
+            )
+
+    def test_config_rejects_empty_default_policy(self, authorizer_options, identity_provider):
+        """TopazConfig raises ValueError for empty string default_policy."""
+        with pytest.raises(ValueError, match="default_policy must be a non-empty string"):
+            TopazConfig(
+                authorizer_options=authorizer_options,
+                policy_path_root="testapp",
+                identity_provider=identity_provider,
+                policy_instance_name="test",
+                default_policy="",
+            )

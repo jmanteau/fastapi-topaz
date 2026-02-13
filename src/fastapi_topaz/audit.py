@@ -41,6 +41,7 @@ class AuditEvent:
     check_type: str = "policy"  # policy, rebac, rebac_batch
     cached: bool = False
     latency_ms: float | None = None
+    policy_resolution_source: str | None = None  # "explicit"|"group"|"default"|"generated"
 
     # Request
     method: str | None = None
@@ -92,6 +93,8 @@ class AuditEvent:
             auth["cached"] = True
         if self.latency_ms is not None:
             auth["latency_ms"] = round(self.latency_ms, 2)
+        if self.policy_resolution_source:
+            auth["resolution_source"] = self.policy_resolution_source
         if auth:
             data["authorization"] = auth
 
@@ -226,6 +229,7 @@ class AuditLogger:
         relation: str | None = None,
         subject_type: str | None = None,
         resource_context: dict[str, Any] | None = None,
+        policy_resolution_source: str | None = None,
     ) -> None:
         """Log an authorization decision."""
         if allowed and not self.log_allowed:
@@ -257,6 +261,7 @@ class AuditLogger:
             relation=relation,
             subject_type=subject_type,
             resource_context=resource_context if self.include_resource_context else None,
+            policy_resolution_source=policy_resolution_source,
         )
 
         await self._emit(event)

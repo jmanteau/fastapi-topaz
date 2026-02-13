@@ -13,7 +13,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import User
 from app.routers import documents, folders, shares
-from app.topaz_integration import topaz_config
+from app.topaz_integration import POLICIES_DIR, topaz_config
 from fastapi_topaz import TopazMiddleware, skip_middleware
 
 
@@ -43,6 +43,7 @@ app.add_middleware(
         r"^/openapi.json$",
     ],
     on_missing_identity="deny",
+    policies_dir=POLICIES_DIR,
 )
 app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
 

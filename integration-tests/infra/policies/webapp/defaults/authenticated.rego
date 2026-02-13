@@ -1,4 +1,4 @@
-package webapp.GET.api.users
+package webapp.defaults.authenticated
 
 import rego.v1
 import data.webapp.common

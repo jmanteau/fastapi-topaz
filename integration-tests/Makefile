@@ -133,17 +133,51 @@ setup: build up
 	@echo "2. Access webapp at http://localhost:8000"
 
 test:
-	cd webapp && uv run --extra dev pytest -v --ignore=tests/integration
+	cd webapp && uv run --native-tls --extra dev pytest -v --ignore=tests/integration
 
-test-integration:
-	cd webapp && uv run --extra integration pytest -v tests/integration
+test-integration: _require-infra
+	cd webapp && uv run --native-tls --extra integration pytest -v tests/integration
 
-test-e2e:
-	cd e2e && uv run pytest -v tests/
+test-e2e: _require-infra
+	cd e2e && uv run --native-tls pytest -v tests/
+
+_require-infra:
+	@echo "Checking infrastructure..."
+	@docker-compose ps --status running 2>/dev/null | grep -q webapp || \
+		{ echo "Error: Docker services not running. Run 'make setup-full' or 'make up' first."; exit 1; }
+	@printf "  Webapp:     "; \
+	for i in 1 2 3 4 5 6; do \
+		if curl -sf http://localhost:8000/health >/dev/null 2>&1; then \
+			echo "healthy"; break; \
+		fi; \
+		if [ $$i -eq 6 ]; then \
+			echo "unhealthy"; \
+			echo "Error: Webapp not healthy. Run 'make up' and wait for services to start."; \
+			exit 1; \
+		fi; \
+		printf "."; sleep 5; \
+	done
+	@printf "  Authentik:  "; \
+	for i in 1 2 3 4 5 6; do \
+		if curl -sf http://localhost:9000/-/health/ready/ >/dev/null 2>&1; then \
+			echo "healthy"; break; \
+		fi; \
+		if [ $$i -eq 6 ]; then \
+			echo "unhealthy"; \
+			echo "Error: Authentik not healthy. Run 'make up' and wait for services to start."; \
+			exit 1; \
+		fi; \
+		printf "."; sleep 5; \
+	done
+	@printf "  Terraform:  "; \
+	test -f $(TF_DIR)/terraform.tfstate && \
+		echo "applied" || \
+		{ echo "missing"; \
+		  echo "Error: Terraform not applied (no tfstate found). Run 'make tf-init && make tf-apply' first."; exit 1; }
 
 setup-integration:
-	cd webapp && uv sync --extra integration
-	cd webapp && uv run --extra integration playwright install chromium
+	cd webapp && uv sync --native-tls --extra integration
+	cd webapp && uv run --native-tls --extra integration playwright install chromium
 	@echo "✓ Integration test dependencies ready"
 
 shell:

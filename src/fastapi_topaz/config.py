@@ -83,6 +83,32 @@ class HierarchyResult:
         return {obj_type: result for obj_type, _, _, result in self.checks}
 
 
+@dataclass(frozen=True)
+class PolicyGroup:
+    """Route pattern mapped to a shared Topaz policy.
+
+    Allows multiple routes matching a URL pattern to share a single policy
+    instead of requiring individual ``.rego`` files for each route.
+
+    Args:
+        url_pattern: Regex matched against the route *template*
+            (e.g. ``/api/v1/admin/{job_id}``), **not** the concrete URL.
+            Use ``^`` anchors for predictable matching.
+        policy_path: Fully-qualified Topaz policy path to evaluate
+            (e.g. ``"myapp.defaults.platform_admin"``).
+
+    Example::
+
+        PolicyGroup(
+            url_pattern=r"^/api/v\\d+/(admin|internal)/",
+            policy_path="myapp.defaults.platform_admin",
+        )
+    """
+
+    url_pattern: str
+    policy_path: str
+
+
 class TopazConfig:
     """
     Configuration for Topaz authorization.
@@ -97,6 +123,11 @@ class TopazConfig:
         resource_context_provider: Function to provide additional context
         policy_path_normalizer: Optional callable to transform generated policy
             paths (e.g., replace hyphens with underscores for valid Rego identifiers)
+        default_policy: Optional fallback policy path evaluated when no explicit
+            policy file exists and no policy group matches. All requests still go
+            through Topaz — this only changes *which* policy is evaluated.
+        policy_groups: Optional ordered list of :class:`PolicyGroup` entries.
+            The first group whose ``url_pattern`` matches the route template wins.
         decision_cache: Optional cache for authorization decisions
         max_concurrent_checks: Max concurrent authorization checks for bulk operations (default: 10)
         circuit_breaker: Optional circuit breaker for graceful degradation
@@ -116,6 +147,8 @@ class TopazConfig:
         policy_instance_label: str | None = None,
         resource_context_provider: Callable[[Request], ResourceContext] | None = None,
         policy_path_normalizer: Callable[[str], str] | None = None,
+        default_policy: str | None = None,
+        policy_groups: list[PolicyGroup] | None = None,
         decision_cache: DecisionCache | None = None,
         max_concurrent_checks: int = 10,
         circuit_breaker: CircuitBreaker | None = None,
@@ -131,6 +164,8 @@ class TopazConfig:
         self.policy_instance_label = policy_instance_label or policy_instance_name
         self.resource_context_provider = resource_context_provider
         self.policy_path_normalizer = policy_path_normalizer
+        self.default_policy = default_policy
+        self.policy_groups = tuple(policy_groups or [])
         self.decision_cache = decision_cache
         self.max_concurrent_checks = max_concurrent_checks
         self.circuit_breaker = circuit_breaker
@@ -142,6 +177,16 @@ class TopazConfig:
         # Stale cache for circuit breaker fallback (stores entries beyond normal TTL)
         self._stale_cache: dict[str, tuple[bool, float]] = {}
         self._stale_cache_lock = asyncio.Lock()
+
+        # Validate policy_groups regex patterns at config creation time
+        if self.policy_groups:
+            from ._policy import _compile_policy_groups
+
+            _compile_policy_groups(self.policy_groups)  # raises ValueError on bad regex
+
+        # Guard against empty string default_policy
+        if default_policy is not None and not default_policy:
+            raise ValueError("default_policy must be a non-empty string or None")
 
         # Configure connection pool with authorizer options
         if self.connection_pool:

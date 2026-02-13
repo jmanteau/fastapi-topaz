@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from aserto.client import Identity, IdentityType
@@ -16,7 +17,7 @@ from fastapi import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Match
 
-from ._policy import _resolve_policy_path
+from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
 from .config import TopazConfig
 
 if TYPE_CHECKING:
@@ -82,6 +83,12 @@ class TopazMiddleware:
     Auto-protects all routes by checking policy paths derived from HTTP method
     and route pattern. Routes are protected unless explicitly excluded.
 
+    Policy Resolution Chain (first match wins):
+      1. Explicit: Route has a ``.rego`` file in *policies_dir*
+      2. Group: Route matches a :class:`PolicyGroup` ``url_pattern``
+      3. Default: ``config.default_policy`` is set
+      4. Generated: Use auto-generated policy path (legacy behaviour)
+
     Args:
         app: The FastAPI application
         config: TopazConfig with authorizer settings
@@ -91,6 +98,10 @@ class TopazMiddleware:
             - "deny": Return 401 Unauthorized
             - "anonymous": Pass anonymous identity to Topaz (let policy decide)
         on_denied: Optional callback to customize 403 response
+        policies_dir: Optional directory to scan for explicit ``.rego`` policy files
+            at startup.  When provided, the middleware builds a set of known policy
+            paths and uses the resolution chain to decide which policy to evaluate
+            per request.
     """
 
     def __init__(
@@ -101,6 +112,7 @@ class TopazMiddleware:
         exclude_methods: list[str] | None = None,
         on_missing_identity: Literal["deny", "anonymous"] = "deny",
         on_denied: Callable[[Request, str], Response] | None = None,
+        policies_dir: str | Path | None = None,
     ) -> None:
         self.app = app
         self.config = config
@@ -108,6 +120,40 @@ class TopazMiddleware:
         self.exclude_methods = set(exclude_methods or ["OPTIONS", "HEAD"])
         self.on_missing_identity = on_missing_identity
         self.on_denied = on_denied
+
+        # --- Resolution chain setup ---
+        # Scan explicit policy files
+        self._scanned_policies: set[str] | None = None
+        if policies_dir is not None:
+            self._scanned_policies = scan_policy_files(policies_dir)
+            logger.info("Scanned %d policy files from %s", len(self._scanned_policies), policies_dir)
+
+        # Pre-compile policy group patterns (avoid per-request re.compile)
+        self._compiled_groups = _compile_policy_groups(config.policy_groups)
+
+        # Warn if multiple groups could match same common prefixes
+        for i, (p1, _) in enumerate(self._compiled_groups):
+            for j, (p2, _) in enumerate(self._compiled_groups):
+                if i < j:
+                    for test in ["/api/", "/admin/", "/api/v1/"]:
+                        if p1.match(test) and p2.match(test):
+                            logger.warning(
+                                "PolicyGroup patterns %r and %r both match %r — first wins",
+                                p1.pattern, p2.pattern, test,
+                            )
+
+        # Startup warnings for missing policy files
+        if self._scanned_policies is not None:
+            if config.default_policy and config.default_policy not in self._scanned_policies:
+                logger.warning(
+                    "default_policy %r not found in %s", config.default_policy, policies_dir,
+                )
+            for group in config.policy_groups:
+                if group.policy_path not in self._scanned_policies:
+                    logger.warning(
+                        "PolicyGroup policy_path %r not found in %s",
+                        group.policy_path, policies_dir,
+                    )
 
     def _match_route(self, scope: Scope) -> tuple[Any, dict] | None:
         """Manually match the route from the app's routes."""
@@ -120,6 +166,43 @@ class TopazMiddleware:
             if match == Match.FULL:
                 return route, child_scope
         return None
+
+    def _resolve_policy(
+        self, specific_policy_path: str, route_path: str,
+    ) -> tuple[str, str]:
+        """Run the resolution chain to determine which policy to evaluate.
+
+        Returns:
+            A ``(policy_path, resolution_source)`` tuple where
+            *resolution_source* is one of ``"explicit"``, ``"group"``,
+            ``"default"``, or ``"generated"``.
+        """
+        # 1. Explicit .rego file exists in scanned set → use it
+        if (
+            self._scanned_policies is not None
+            and specific_policy_path in self._scanned_policies
+        ):
+            return specific_policy_path, "explicit"
+
+        # 2. First matching policy group wins
+        for compiled_pattern, group_policy_path in self._compiled_groups:
+            if compiled_pattern.match(route_path):
+                logger.debug(
+                    "Route %s matched group %s -> %s",
+                    route_path, compiled_pattern.pattern, group_policy_path,
+                )
+                return group_policy_path, "group"
+
+        # 3. Fall back to default policy
+        if self.config.default_policy:
+            logger.debug(
+                "Route %s using default_policy -> %s",
+                route_path, self.config.default_policy,
+            )
+            return self.config.default_policy, "default"
+
+        # 4. No resolution config → use auto-generated policy path
+        return specific_policy_path, "generated"
 
     def _is_excluded(self, method: str, path: str, route: Any) -> bool:
         """Check if request should skip authorization."""
@@ -166,12 +249,13 @@ class TopazMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Generate policy path
+        # Generate policy path and resolve through chain
         route_path = getattr(route, "path", path)
         policy_path = _resolve_policy_path(
             self.config.policy_path_root, method, route_path,
             self.config.policy_path_normalizer,
         )
+        policy_path, resolution_source = self._resolve_policy(policy_path, route_path)
 
         # Inject path_params into scope so Request.path_params works
         # in identity_provider and resource_context_provider
@@ -221,6 +305,7 @@ class TopazMiddleware:
                 identity_type=identity.type.name if hasattr(identity.type, "name") else str(identity.type),  # type: ignore[union-attr]
                 identity_value=identity.value, latency_ms=latency_ms,
                 resource_context=resource_context or None,
+                policy_resolution_source=resolution_source,
             )
 
         if not allowed:

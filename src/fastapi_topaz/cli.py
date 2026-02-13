@@ -120,14 +120,74 @@ def cmd_policy_diff(args: argparse.Namespace) -> int:
         for o in diff.orphaned:
             print(f"   - {o}")
 
-    if diff.valid:
-        print(f"\n✓ Valid policies: {len(diff.valid)}")
+    if diff.group_covered:
+        print(f"\n✓ Covered by policy group ({len(diff.group_covered)}):")
+        for g in diff.group_covered:
+            print(f"   - {g}")
 
+    if diff.default_covered:
+        print(f"\n✓ Covered by default policy ({len(diff.default_covered)}):")
+        for d in diff.default_covered:
+            print(f"   - {d}")
+
+    if diff.valid:
+        print(f"\n✓ Explicit policies: {len(diff.valid)}")
+
+    total_covered = len(diff.valid) + len(diff.group_covered) + len(diff.default_covered)
     if diff.has_issues:
-        print(f"\nSummary: {len(diff.missing)} missing, {len(diff.orphaned)} orphaned")
+        print(
+            f"\nSummary: {len(diff.missing)} missing, {len(diff.orphaned)} orphaned, "
+            f"{total_covered} covered"
+        )
         return 1 if args.strict or diff.missing else 0
 
     print("\n✓ All policies are in sync!")
+    return 0
+
+
+def cmd_generate_rights_matrix(args: argparse.Namespace) -> int:
+    """Generate a rights matrix document."""
+    from .codegen import generate_rights_matrix
+
+    app = import_app(args.app)
+
+    if args.config:
+        config = import_config(args.config)
+    else:
+        from aserto.client import AuthorizerOptions, Identity, IdentityType
+
+        from .dependencies import TopazConfig
+
+        config = TopazConfig(
+            authorizer_options=AuthorizerOptions(url="localhost:8282"),
+            policy_path_root=args.root or "app",
+            identity_provider=lambda r: Identity(
+                type=IdentityType.IDENTITY_TYPE_NONE, value=""
+            ),
+            policy_instance_name="generated",
+        )
+
+    policies_dir = args.policies
+    output_file = args.output
+
+    results = generate_rights_matrix(
+        app, config,
+        policies_dir=policies_dir,
+        output_file=output_file,
+    )
+
+    # Print summary
+    by_source: dict[str, int] = {}
+    for r in results:
+        by_source[r.resolution_source] = by_source.get(r.resolution_source, 0) + 1
+
+    print(f"Rights matrix: {len(results)} routes")
+    for source, count in sorted(by_source.items()):
+        print(f"  {source}: {count}")
+
+    if output_file:
+        print(f"\nWritten to {output_file}")
+
     return 0
 
 
@@ -180,6 +240,17 @@ def main() -> int:
     diff.add_argument("--root", help="Policy path root (default: app)")
     diff.add_argument("--strict", action="store_true", help="Fail on orphaned policies too")
     diff.set_defaults(func=cmd_policy_diff)
+
+    # generate-rights-matrix
+    matrix = subparsers.add_parser(
+        "generate-rights-matrix", help="Generate a rights matrix document"
+    )
+    matrix.add_argument("--app", required=True, help="FastAPI app (module:attribute)")
+    matrix.add_argument("--config", help="TopazConfig (module:attribute)")
+    matrix.add_argument("--root", help="Policy path root (default: app)")
+    matrix.add_argument("--policies", "-p", help="Policies directory (enables file existence checks)")
+    matrix.add_argument("--output", "-o", help="Output Markdown file")
+    matrix.set_defaults(func=cmd_generate_rights_matrix)
 
     # policy-map
     pmap = subparsers.add_parser(

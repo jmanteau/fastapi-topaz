@@ -1,7 +1,16 @@
 """Shared policy path utilities used by dependencies and codegen."""
 from __future__ import annotations
 
-from typing import Callable
+import logging
+import re
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from .config import PolicyGroup
+
+logger = logging.getLogger("fastapi_topaz")
 
 
 def _policy_path_heuristic(path: str) -> str:
@@ -61,6 +70,75 @@ def _resolve_policy_path(
     result = f"{root}.{method}{heuristic}"
     if policy_path_normalizer is not None:
         result = policy_path_normalizer(result)
+    return result
+
+
+def _compile_policy_groups(
+    groups: tuple[PolicyGroup, ...] | list[PolicyGroup],
+) -> list[tuple[re.Pattern[str], str]]:
+    """Pre-compile PolicyGroup regex patterns.
+
+    Raises :class:`ValueError` on invalid regex or patterns that exhibit
+    ReDoS-like behaviour against a pathological input.
+    """
+    compiled: list[tuple[re.Pattern[str], str]] = []
+    for group in groups:
+        try:
+            pattern = re.compile(group.url_pattern)
+        except re.error as e:
+            raise ValueError(
+                f"Invalid regex in PolicyGroup url_pattern {group.url_pattern!r}: {e}"
+            ) from e
+
+        # Heuristic ReDoS check: test pattern against pathological input
+        test_input = "/a" * 200
+        start = time.perf_counter()
+        pattern.match(test_input)
+        if time.perf_counter() - start > 0.1:
+            raise ValueError(
+                f"PolicyGroup url_pattern {group.url_pattern!r} may be vulnerable to ReDoS"
+            )
+
+        compiled.append((pattern, group.policy_path))
+    return compiled
+
+
+def scan_policy_files(policies_dir: str | Path | None) -> set[str]:
+    """Scan a directory for ``.rego`` files and return the set of policy paths.
+
+    Each ``.rego`` file is converted to a dotted policy path by stripping the
+    extension and replacing path separators with dots.
+
+    Example::
+
+        >>> scan_policy_files("policies")
+        {"myapp.GET.documents.__id", "myapp.defaults.authenticated", ...}
+
+    Args:
+        policies_dir: Root directory to scan (recursively).  ``None`` returns
+            an empty set immediately.
+
+    Returns:
+        Set of policy path strings.  Returns an empty set when the
+        directory does not exist or *policies_dir* is ``None``.
+    """
+    if policies_dir is None:
+        return set()
+    policies_path = Path(policies_dir).resolve()
+    result: set[str] = set()
+    if not policies_path.exists():
+        return result
+    for rego_file in policies_path.rglob("*.rego"):
+        real_file = rego_file.resolve()
+        # Verify file stays within policies_dir (prevent symlink escape)
+        try:
+            real_file.relative_to(policies_path)
+        except ValueError:
+            logger.warning("Skipping symlink escape: %s -> %s", rego_file, real_file)
+            continue
+        relative = rego_file.relative_to(policies_path)
+        policy_path = str(relative.with_suffix("")).replace("/", ".")
+        result.add(policy_path)
     return result
 
 

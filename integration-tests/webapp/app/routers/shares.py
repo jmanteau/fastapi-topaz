@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi_topaz import require_policy_allowed
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -130,7 +129,6 @@ async def delete_share(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
-    _: None = Depends(require_policy_allowed(topaz_config, "webapp.DELETE.api.shares.__share_id")),
 ):
     """Remove share."""
     share = db.query(Share).filter(Share.id == share_id).first()

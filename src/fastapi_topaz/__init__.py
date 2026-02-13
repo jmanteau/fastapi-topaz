@@ -12,7 +12,7 @@ from ._policy import normalize_hyphens
 from .audit import AuditEvent, AuditLogger
 from .cache import DecisionCache
 from .circuit_breaker import CircuitBreaker, CircuitState, CircuitStatus
-from .config import HierarchyResult, TopazConfig
+from .config import HierarchyResult, PolicyGroup, TopazConfig
 from .connection_pool import ConnectionPool, PoolStatus
 from .dependencies import (
     filter_authorized_resources,
@@ -29,6 +29,7 @@ __all__ = [
     # Core
     "DecisionCache",
     "HierarchyResult",
+    "PolicyGroup",
     "TopazConfig",
     "AuthorizationError",
     # Policy utilities
