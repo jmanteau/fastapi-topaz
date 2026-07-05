@@ -413,6 +413,38 @@ class TestMiddlewareWithCache:
         assert call_count[0] == 1  # Cached, no additional call
 
 
+class TestMiddlewareMetricsSource:
+    """
+    Regression (B2): middleware checks must be attributed to source="middleware"
+    in metrics, matching the audit log attribution.
+    """
+
+    def test_metrics_source_is_middleware(
+        self, authorizer_options, identity_provider, patch_client
+    ):
+        metrics = Mock()
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            metrics=metrics,
+        )
+
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=config)
+
+        @app.get("/documents")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        assert client.get("/documents").status_code == 200
+
+        metrics.record_auth_request.assert_called_once()
+        assert metrics.record_auth_request.call_args.kwargs["source"] == "middleware"
+
+
 class TestMiddlewareErrorHandling:
     """
     Middleware behavior when authorizer is unavailable.

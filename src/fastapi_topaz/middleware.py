@@ -4,6 +4,7 @@ Authorization middleware for FastAPI.
 Provides global request-level authorization that auto-protects all routes
 without requiring explicit Depends() on each endpoint.
 """
+
 from __future__ import annotations
 
 import logging
@@ -132,7 +133,9 @@ class TopazMiddleware:
         self._scanned_policies: set[str] | None = None
         if policies_dir is not None:
             self._scanned_policies = scan_policy_files(policies_dir)
-            logger.info("Scanned %d policy files from %s", len(self._scanned_policies), policies_dir)
+            logger.info(
+                "Scanned %d policy files from %s", len(self._scanned_policies), policies_dir
+            )
 
         # Pre-compile policy group patterns (avoid per-request re.compile)
         self._compiled_groups = _compile_policy_groups(config.policy_groups)
@@ -145,20 +148,25 @@ class TopazMiddleware:
                         if p1.match(test) and p2.match(test):
                             logger.warning(
                                 "PolicyGroup patterns %r and %r both match %r — first wins",
-                                p1.pattern, p2.pattern, test,
+                                p1.pattern,
+                                p2.pattern,
+                                test,
                             )
 
         # Startup warnings for missing policy files
         if self._scanned_policies is not None:
             if config.default_policy and config.default_policy not in self._scanned_policies:
                 logger.warning(
-                    "default_policy %r not found in %s", config.default_policy, policies_dir,
+                    "default_policy %r not found in %s",
+                    config.default_policy,
+                    policies_dir,
                 )
             for group in config.policy_groups:
                 if group.policy_path not in self._scanned_policies:
                     logger.warning(
                         "PolicyGroup policy_path %r not found in %s",
-                        group.policy_path, policies_dir,
+                        group.policy_path,
+                        policies_dir,
                     )
 
     def _match_route(self, scope: Scope) -> tuple[Any, dict] | None:
@@ -174,7 +182,9 @@ class TopazMiddleware:
         return None
 
     def _resolve_policy(
-        self, specific_policy_path: str, route_path: str,
+        self,
+        specific_policy_path: str,
+        route_path: str,
     ) -> tuple[str, str]:
         """Run the resolution chain to determine which policy to evaluate.
 
@@ -184,10 +194,7 @@ class TopazMiddleware:
             ``"default"``, or ``"generated"``.
         """
         # 1. Explicit .rego file exists in scanned set → use it
-        if (
-            self._scanned_policies is not None
-            and specific_policy_path in self._scanned_policies
-        ):
+        if self._scanned_policies is not None and specific_policy_path in self._scanned_policies:
             return specific_policy_path, "explicit"
 
         # 2. First matching policy group wins
@@ -195,7 +202,9 @@ class TopazMiddleware:
             if compiled_pattern.match(route_path):
                 logger.debug(
                     "Route %s matched group %s -> %s",
-                    route_path, compiled_pattern.pattern, group_policy_path,
+                    route_path,
+                    compiled_pattern.pattern,
+                    group_policy_path,
                 )
                 return group_policy_path, "group"
 
@@ -203,7 +212,8 @@ class TopazMiddleware:
         if self.config.default_policy:
             logger.debug(
                 "Route %s using default_policy -> %s",
-                route_path, self.config.default_policy,
+                route_path,
+                self.config.default_policy,
             )
             return self.config.default_policy, "default"
 
@@ -258,7 +268,9 @@ class TopazMiddleware:
         # Generate policy path and resolve through chain
         route_path = getattr(route, "path", path)
         policy_path = _resolve_policy_path(
-            self.config.policy_path_root, method, route_path,
+            self.config.policy_path_root,
+            method,
+            route_path,
             self.config.policy_path_normalizer,
         )
         policy_path, resolution_source = self._resolve_policy(policy_path, route_path)
@@ -282,7 +294,9 @@ class TopazMiddleware:
         if identity is None or not identity.value:
             if self.on_missing_identity == "deny":
                 if self.config.audit_logger:
-                    await self.config.audit_logger.log_unauthenticated_event(request, "missing_identity")
+                    await self.config.audit_logger.log_unauthenticated_event(
+                        request, "missing_identity"
+                    )
                 response = JSONResponse(status_code=401, content={"detail": "Unauthorized"})
                 await response(scope, receive, send)
                 return
@@ -298,12 +312,14 @@ class TopazMiddleware:
         check_error: Exception | None = None
         try:
             allowed = await self.config.check_decision(
-                request, policy_path, "allowed", resource_context or None
+                request,
+                policy_path,
+                "allowed",
+                resource_context or None,
+                source="middleware",
             )
         except Exception as e:
-            logger.exception(
-                "Authorization check failed in middleware for policy %s", policy_path
-            )
+            logger.exception("Authorization check failed in middleware for policy %s", policy_path)
             check_error = e
             allowed = False
 
@@ -312,10 +328,15 @@ class TopazMiddleware:
         if check_error is not None:
             if self.config.audit_logger:
                 await self.config.audit_logger.log_decision(
-                    request=request, policy_path=policy_path, allowed=False,
+                    request=request,
+                    policy_path=policy_path,
+                    allowed=False,
                     source="middleware",
-                    identity_type=identity.type.name if hasattr(identity.type, "name") else str(identity.type),  # type: ignore[union-attr]
-                    identity_value=identity.value, latency_ms=latency_ms,
+                    identity_type=identity.type.name  # type: ignore[union-attr]
+                    if hasattr(identity.type, "name")
+                    else str(identity.type),
+                    identity_value=identity.value,
+                    latency_ms=latency_ms,
                     resource_context=resource_context or None,
                     policy_resolution_source=resolution_source,
                     reason="authorizer_error",
@@ -335,9 +356,15 @@ class TopazMiddleware:
         # Audit logging
         if self.config.audit_logger:
             await self.config.audit_logger.log_decision(
-                request=request, policy_path=policy_path, allowed=allowed, source="middleware",
-                identity_type=identity.type.name if hasattr(identity.type, "name") else str(identity.type),  # type: ignore[union-attr]
-                identity_value=identity.value, latency_ms=latency_ms,
+                request=request,
+                policy_path=policy_path,
+                allowed=allowed,
+                source="middleware",
+                identity_type=identity.type.name  # type: ignore[union-attr]
+                if hasattr(identity.type, "name")
+                else str(identity.type),
+                identity_value=identity.value,
+                latency_ms=latency_ms,
                 resource_context=resource_context or None,
                 policy_resolution_source=resolution_source,
             )
