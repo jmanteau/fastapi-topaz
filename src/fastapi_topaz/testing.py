@@ -263,27 +263,3 @@ def install_mock(monkeypatch: Any, mock_config: MockTopazConfig, target: Any) ->
         target: The real TopazConfig instance to patch
     """
     monkeypatch.setattr(target, "check_decision", mock_config.check_decision)
-
-
-# Pytest fixtures (can be imported in conftest.py)
-def pytest_configure(config: Any) -> None:
-    """Register markers for pytest."""
-    pass
-
-
-# Pre-built fixtures for pytest_plugins usage
-def mock_topaz_config_fixture():
-    """Base MockTopazConfig fixture."""
-    return MockTopazConfig(default_decision=True)
-
-
-def allow_all_auth_fixture(monkeypatch: Any, mock_topaz_config: MockTopazConfig):
-    """Allow all authorization checks."""
-    mock_topaz_config.default_decision = True
-    return mock_topaz_config
-
-
-def deny_all_auth_fixture(monkeypatch: Any, mock_topaz_config: MockTopazConfig):
-    """Deny all authorization checks."""
-    mock_topaz_config.default_decision = False
-    return mock_topaz_config
