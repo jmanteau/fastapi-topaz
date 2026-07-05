@@ -56,13 +56,11 @@ opa:
     skip_verification: true
   config:
     plugins:
-      aserto_decision_log:
+      # Topaz 0.33.13 renamed the plugin (was aserto_decision_log) and moved
+      # the file logger settings from the top-level decision_logger section here.
+      topaz_file_decision_logger:
         enabled: true
-
-# Decision logger configuration
-decision_logger:
-  type: "file"
-  config:
-    log_file_path: /data/decisions.log
-    max_file_size_mb: 20
-    max_file_count: 3
+        config:
+          log_file_path: /data/decisions.log
+          max_file_size_mb: 20
+          max_file_count: 3

@@ -122,7 +122,7 @@ services:
 
   # Topaz authorizer
   topaz:
-    image: ghcr.io/aserto-dev/topaz:latest
+    image: ghcr.io/aserto-dev/topaz:${TOPAZ_TAG:-latest}
     container_name: topaz
     command: run -c /config/config.yaml
     volumes:
