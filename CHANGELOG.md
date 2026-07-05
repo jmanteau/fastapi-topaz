@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Circuit breaker now detects gRPC errors (`grpc.RpcError`, including `grpc.aio.AioRpcError`) as failures based on their status code, so the breaker actually trips during Topaz outages; previously the default `failure_exceptions` never matched gRPC errors
+- Authorization checks now reuse a single long-lived gRPC channel instead of opening (and never closing) a new secure channel per request, eliminating a channel and file-descriptor leak
+- Middleware now logs authorization infrastructure errors with full tracebacks and emits an audit event with `reason="authorizer_error"` instead of silently converting every failure into a 403; identity-provider exceptions are logged instead of being swallowed
+
+### Added
+
+- `TopazConfig(check_timeout=...)`: gRPC deadline in seconds applied to each authorization call (default 5.0), so a hung Topaz no longer hangs requests forever
+- `TopazMiddleware(on_error=...)`: opt-in `"unavailable"` mode returns 503 instead of the fail-closed 403 default when the authorization check itself fails
+- `CircuitBreaker(failure_grpc_codes=...)`: set of gRPC status codes treated as failures (default: UNAVAILABLE, DEADLINE_EXCEEDED, UNKNOWN, INTERNAL, RESOURCE_EXHAUSTED); policy errors such as INVALID_ARGUMENT do not trip the breaker
+- `AuditLogger.log_decision(reason=...)`: optional reason field forwarded to the audit event
+
+### Deprecated
+
+- `ConnectionPool`: has no effect on authorization calls (they use the shared channel) and will be removed in 2.0; it now closes underlying channels when discarding connections and emits a `DeprecationWarning` on `configure()`
+- `TopazConfig.create_client()`: no longer used internally; each call opens a new channel the caller must close; will be removed in 2.0
+
 ## [1.1.0]
 
 ### Added
