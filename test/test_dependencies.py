@@ -333,6 +333,7 @@ class TestRequirePolicyAuto:
         client = TestClient(app)
         response = client.get("/documents")
         assert response.status_code == 403
+        assert response.json()["detail"] == "Forbidden"
 
     def test_auto_uses_custom_decision(self, topaz_config, monkeypatch):
         """Should check custom decision name."""
@@ -499,6 +500,7 @@ class TestRequirePolicyAllowed:
         client = TestClient(app)
         response = client.get("/test")
         assert response.status_code == 403
+        assert response.json()["detail"] == "Forbidden"
 
     def test_uses_correct_policy_path(self, topaz_config, patch_client):
         """Should pass the correct policy_path to authorizer."""
@@ -636,6 +638,7 @@ class TestRequireRebacAllowed:
         client = TestClient(app)
         response = client.get("/docs/123")
         assert response.status_code == 403
+        assert response.json()["detail"] == "Forbidden"
 
     def test_extracts_object_id_from_path_params(self, topaz_config, patch_client):
         """Should extract object_id from path param 'id' by default."""
@@ -880,6 +883,7 @@ class TestGetAuthorizedResource:
         client = TestClient(app)
         response = client.get("/docs/123")
         assert response.status_code == 403
+        assert response.json()["detail"] == "Forbidden"
 
     def test_uses_object_id_from_path_params(self, topaz_config, patch_client):
         """Should use path param 'id' as object_id by default."""
@@ -1876,7 +1880,7 @@ class TestRequireRebacHierarchy:
             response = await client.get("/orgs/org-1/docs/doc-1")
 
         assert response.status_code == 403
-        assert "document" in response.json()["detail"]
+        assert response.json()["detail"] == "Forbidden"
 
 
 class TestEmptyObjectIdFailsLoudly:

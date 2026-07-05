@@ -15,6 +15,55 @@ T = TypeVar("T")
 logger = logging.getLogger("fastapi_topaz")
 
 
+async def _check_policy_and_raise(
+    config: TopazConfig,
+    request: Request,
+    policy_path: str,
+    decision: str,
+    resource_context: ResourceContext | None,
+) -> None:
+    """Build context, run the policy check, raise a generic 403 on deny.
+
+    Per-request details (identity, context, decision) are logged at DEBUG;
+    the audit logger is the structured record for authorization decisions.
+    """
+    identity = config.identity_provider(request)
+
+    ctx: ResourceContext = dict(resource_context) if resource_context else {}
+    if config.resource_context_provider:
+        ctx.update(config.resource_context_provider(request))
+
+    # Add path params to context
+    if request.path_params:
+        ctx.update(request.path_params)
+
+    logger.debug(
+        f"Authorization check: path={policy_path}, decision={decision}, "
+        f"identity_type={identity.type}, identity_value={identity.value}"
+    )
+    logger.debug(f"Resource context: {ctx}")
+
+    allowed = await config.check_decision(request, policy_path, decision, ctx)
+
+    if not allowed:
+        logger.debug(f"Access DENIED: path={policy_path}, identity={identity.value}, context={ctx}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden",
+        )
+
+    logger.debug(f"Access GRANTED: path={policy_path}, identity={identity.value}")
+
+
+def _raise_rebac_denied(relation: str, object_type: str, obj_id: str) -> None:
+    """Log the denied ReBAC check at DEBUG and raise a generic 403."""
+    logger.debug(f"ReBAC access DENIED: {relation} on {object_type}:{obj_id}")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Forbidden",
+    )
+
+
 def _require_object_id(obj_id: str, request: Request, expected_param: str) -> None:
     """Raise 500 when a ReBAC dependency could not resolve a non-empty object ID.
 
@@ -68,36 +117,7 @@ def require_policy_allowed(
     """
 
     async def dependency(request: Request) -> None:
-        identity = config.identity_provider(request)
-
-        ctx: ResourceContext = dict(resource_context) if resource_context else {}
-        if config.resource_context_provider:
-            ctx.update(config.resource_context_provider(request))
-
-        # Add path params to context
-        if request.path_params:
-            ctx.update(request.path_params)
-
-        logger.info(
-            f"Authorization check: path={policy_path}, decision={decision}, "
-            f"identity_type={identity.type}, identity_value={identity.value}"
-        )
-        logger.debug(f"Resource context: {ctx}")
-
-        allowed = await config.check_decision(request, policy_path, decision, ctx)
-
-        logger.info(f"Authorization result: policy={policy_path}, allowed={allowed}")
-
-        if not allowed:
-            logger.warning(
-                f"Access DENIED: path={policy_path}, identity={identity.value}, context={ctx}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access denied: {policy_path}",
-            )
-
-        logger.info(f"Access GRANTED: path={policy_path}, identity={identity.value}")
+        await _check_policy_and_raise(config, request, policy_path, decision, resource_context)
 
     return dependency
 
@@ -156,36 +176,7 @@ def require_policy_auto(
             config.policy_path_normalizer,
         )
 
-        identity = config.identity_provider(request)
-
-        ctx: ResourceContext = dict(resource_context) if resource_context else {}
-        if config.resource_context_provider:
-            ctx.update(config.resource_context_provider(request))
-
-        # Add path params to context
-        if request.path_params:
-            ctx.update(request.path_params)
-
-        logger.info(
-            f"Authorization check (auto): path={policy_path}, decision={decision}, "
-            f"identity_type={identity.type}, identity_value={identity.value}"
-        )
-        logger.debug(f"Resource context: {ctx}")
-
-        allowed = await config.check_decision(request, policy_path, decision, ctx)
-
-        logger.info(f"Authorization result: policy={policy_path}, allowed={allowed}")
-
-        if not allowed:
-            logger.warning(
-                f"Access DENIED: path={policy_path}, identity={identity.value}, context={ctx}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access denied: {policy_path}",
-            )
-
-        logger.info(f"Access GRANTED: path={policy_path}, identity={identity.value}")
+        await _check_policy_and_raise(config, request, policy_path, decision, resource_context)
 
     return dependency
 
@@ -253,10 +244,7 @@ def require_rebac_allowed(
         allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
 
         if not allowed:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access denied: {relation} on {object_type}:{obj_id}",
-            )
+            _raise_rebac_denied(relation, object_type, obj_id)
 
     return dependency
 
@@ -334,10 +322,7 @@ def get_authorized_resource(
         allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
 
         if not allowed:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access denied: {relation} on {object_type}:{obj_id}",
-            )
+            _raise_rebac_denied(relation, object_type, obj_id)
 
         return resource
 
@@ -490,12 +475,12 @@ def require_rebac_hierarchy(
 
         if not result.allowed:
             if result.denied_at:
-                detail = f"Access denied at {result.denied_at}"
+                logger.debug(f"Hierarchy access DENIED at {result.denied_at}")
             else:
-                detail = "Access denied: no matching permissions"
+                logger.debug("Hierarchy access DENIED: no matching permissions")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=detail,
+                detail="Forbidden",
             )
 
     return dependency
