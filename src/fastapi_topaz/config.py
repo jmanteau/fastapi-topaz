@@ -172,6 +172,8 @@ class TopazConfig:
             circuit transitions and the state gauge are recorded automatically
             (a user-provided callback takes precedence).
         tracing: Optional OpenTelemetry tracing
+        insecure: Use a plaintext (non-TLS) gRPC channel to the authorizer.
+            Local development only — never enable against a production Topaz.
     """
 
     def __init__(
@@ -194,6 +196,7 @@ class TopazConfig:
         audit_logger: AuditLogger | None = None,
         metrics: PrometheusMetrics | None = None,
         tracing: OTelTracing | None = None,
+        insecure: bool = False,
     ):
         self.authorizer_options = authorizer_options
         self.policy_path_root = policy_path_root
@@ -212,7 +215,8 @@ class TopazConfig:
         self.audit_logger = audit_logger
         self.metrics = metrics
         self.tracing = tracing
-        self._authorizer = SharedAuthorizerClient(authorizer_options)
+        self.insecure = insecure
+        self._authorizer = SharedAuthorizerClient(authorizer_options, insecure=insecure)
         # asyncio primitives are created lazily on first use: on Python 3.9
         # they bind the event loop active at creation time, and configs are
         # typically created at module import, outside any loop

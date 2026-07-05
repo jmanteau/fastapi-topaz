@@ -29,8 +29,15 @@ class SharedAuthorizerClient:
     the network or binds to an event loop.
     """
 
-    def __init__(self, options: AuthorizerOptions) -> None:
+    def __init__(self, options: AuthorizerOptions, *, insecure: bool = False) -> None:
+        """
+        Args:
+            options: Authorizer connection settings
+            insecure: Use a plaintext (non-TLS) gRPC channel. Local
+                development only — never enable against a production Topaz.
+        """
         self._options = options
+        self._insecure = insecure
         self._channel: grpc.aio.Channel | None = None
         self._stub: typing.Any = None
         self._channel_lock = asyncio.Lock()
@@ -41,10 +48,13 @@ class SharedAuthorizerClient:
             return self._stub
         async with self._channel_lock:
             if self._stub is None:
-                self._channel = grpc.aio.secure_channel(
-                    target=self._options.url,
-                    credentials=ssl_channel_credentials(self._options.cert),
-                )
+                if self._insecure:
+                    self._channel = grpc.aio.insecure_channel(target=self._options.url)
+                else:
+                    self._channel = grpc.aio.secure_channel(
+                        target=self._options.url,
+                        credentials=ssl_channel_credentials(self._options.cert),
+                    )
                 self._stub = authorizer.AuthorizerStub(self._channel)
         return self._stub
 

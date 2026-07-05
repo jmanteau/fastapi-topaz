@@ -36,6 +36,21 @@ ConnectionRefusedError: [Errno 111] Connection refused
    # Ensure containers are on same network
    ```
 
+### TLS handshake failures against a plaintext Topaz
+
+**Symptoms:** the client hangs or fails with SSL errors when Topaz runs without TLS (e.g. `topaz start --no-tls` or a plaintext docker-compose setup).
+
+**Solution:** the client uses a TLS gRPC channel by default. For a local, non-TLS Topaz, enable the insecure channel:
+
+```python
+config = TopazConfig(
+    ...
+    insecure=True,  # plaintext gRPC channel - local development only
+)
+```
+
+Never enable `insecure=True` against a production Topaz. If Topaz runs with TLS and a self-signed certificate, keep the default and point `AuthorizerOptions(cert_file_path=...)` at the CA certificate instead.
+
 ### "Deadline exceeded" / Timeout
 
 **Symptoms:**

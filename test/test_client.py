@@ -130,3 +130,44 @@ class TestCheckDecisionUsesSharedClient:
 
         await config.check_decision(_mock_request(), "test.GET.docs", "allowed")
         assert create_client_calls[0] == 0
+
+
+class TestInsecureChannel:
+    """F2: first-class insecure (plaintext) channel option for local development."""
+
+    @pytest.mark.asyncio
+    async def test_insecure_true_creates_insecure_channel(self, monkeypatch):
+        import grpc.aio
+
+        insecure_mock = Mock(return_value=Mock())
+        secure_mock = Mock(return_value=Mock())
+        monkeypatch.setattr(grpc.aio, "insecure_channel", insecure_mock)
+        monkeypatch.setattr(grpc.aio, "secure_channel", secure_mock)
+
+        client = SharedAuthorizerClient(AuthorizerOptions(url="localhost:8282"), insecure=True)
+        await client._ensure_channel()
+
+        insecure_mock.assert_called_once_with(target="localhost:8282")
+        secure_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_default_creates_secure_channel(self, monkeypatch):
+        import grpc.aio
+
+        insecure_mock = Mock(return_value=Mock())
+        secure_mock = Mock(return_value=Mock())
+        monkeypatch.setattr(grpc.aio, "insecure_channel", insecure_mock)
+        monkeypatch.setattr(grpc.aio, "secure_channel", secure_mock)
+
+        client = SharedAuthorizerClient(AuthorizerOptions(url="localhost:8282"))
+        await client._ensure_channel()
+
+        secure_mock.assert_called_once()
+        insecure_mock.assert_not_called()
+
+    def test_config_propagates_insecure_flag(self):
+        config = _make_config(insecure=True)
+        assert config._authorizer._insecure is True
+
+        default_config = _make_config()
+        assert default_config._authorizer._insecure is False
