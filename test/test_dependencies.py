@@ -1877,3 +1877,135 @@ class TestRequireRebacHierarchy:
 
         assert response.status_code == 403
         assert "document" in response.json()["detail"]
+
+
+class TestEmptyObjectIdFailsLoudly:
+    """Regression (B5): unresolvable object IDs return 500, never a silent
+    check against object_id="" in Topaz."""
+
+    def test_rebac_mismatched_path_param_returns_500(self, topaz_config, patch_client):
+        """Route param named doc_id while dependency expects 'id' -> 500."""
+        app = FastAPI()
+
+        @app.get("/docs/{doc_id}")
+        def route(
+            doc_id: int,
+            request: Request,
+            _=Depends(require_rebac_allowed(topaz_config, "document", "can_read")),
+        ):
+            return {"id": doc_id}
+
+        client = TestClient(app)
+        response = client.get("/docs/123")
+        assert response.status_code == 500
+        assert "could not resolve object ID" in response.json()["detail"]
+        patch_client.decisions.assert_not_called()
+
+    def test_rebac_callable_returning_empty_returns_500(self, topaz_config, patch_client):
+        """Callable object_id returning '' -> 500."""
+        app = FastAPI()
+
+        @app.get("/test")
+        def route(
+            request: Request,
+            _=Depends(
+                require_rebac_allowed(topaz_config, "document", "can_read", object_id=lambda r: "")
+            ),
+        ):
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        response = client.get("/test")
+        assert response.status_code == 500
+        patch_client.decisions.assert_not_called()
+
+    def test_get_authorized_resource_mismatched_param_returns_500(self, topaz_config, patch_client):
+        """get_authorized_resource with mismatched path param -> 500."""
+        app = FastAPI()
+
+        @app.get("/docs/{doc_id}")
+        def route(
+            doc_id: int,
+            document=Depends(
+                get_authorized_resource(
+                    topaz_config,
+                    lambda req: FakeDocument(id=1, name="test", owner="alice"),
+                    "document",
+                    "can_read",
+                )
+            ),
+        ):
+            return {"id": document.id}
+
+        client = TestClient(app)
+        response = client.get("/docs/123")
+        assert response.status_code == 500
+        patch_client.decisions.assert_not_called()
+
+    def test_hierarchy_missing_param_returns_500(self, topaz_config, patch_client):
+        """require_rebac_hierarchy with a missing path param -> 500, not 403."""
+        app = FastAPI()
+
+        @app.get("/docs/{doc_id}")
+        def route(
+            doc_id: str,
+            request: Request,
+            _=Depends(
+                require_rebac_hierarchy(
+                    topaz_config,
+                    [("organization", "org_id", "member"), ("document", "doc_id", "can_read")],
+                )
+            ),
+        ):
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        response = client.get("/docs/doc-1")
+        assert response.status_code == 500
+        assert "could not resolve object ID" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_filter_empty_extracted_id_raises(self, topaz_config, patch_client):
+        """filter_authorized_resources raises ValueError on empty extracted ID."""
+
+        @dataclass
+        class NoIdResource:
+            name: str
+
+        app = FastAPI()
+        captured_error: list[Exception] = []
+
+        @app.get("/documents")
+        async def route(
+            request: Request,
+            filter_fn=Depends(filter_authorized_resources(topaz_config, "document", "can_read")),
+        ):
+            try:
+                await filter_fn([NoIdResource(name="orphan")])
+            except ValueError as e:
+                captured_error.append(e)
+            return {"status": "ok"}
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.get("/documents")
+
+        assert len(captured_error) == 1
+        assert "empty object ID" in str(captured_error[0])
+
+    def test_non_empty_ids_still_work(self, topaz_config, patch_client):
+        """Regression: matching path param still resolves and authorizes."""
+        app = FastAPI()
+
+        @app.get("/docs/{id}")
+        def route(
+            id: int,
+            request: Request,
+            _=Depends(require_rebac_allowed(topaz_config, "document", "can_read")),
+        ):
+            return {"id": id}
+
+        client = TestClient(app)
+        response = client.get("/docs/123")
+        assert response.status_code == 200
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["resource_context"]["object_id"] == "123"

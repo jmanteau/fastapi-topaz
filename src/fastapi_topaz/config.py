@@ -43,23 +43,54 @@ def _resolve_id_source(id_source: str | Callable[[Request], str], request: Reque
 
     Returns:
         The resolved ID string
+
+    Raises:
+        ValueError: If the resolved value is empty (missing path param, header,
+            query param, or a callable returning an empty string). An empty
+            object ID would silently be checked against ``object_id=""`` in
+            Topaz, which is a misconfiguration, never a valid check.
     """
     if callable(id_source):
-        return id_source(request)
+        resolved = id_source(request)
+        if not resolved:
+            raise ValueError(
+                "id_source callable returned an empty object ID "
+                f"for {request.method} {request.url.path}"
+            )
+        return resolved
 
     if id_source.startswith("header:"):
         header_name = id_source[7:]
-        return request.headers.get(header_name, "")
+        resolved = request.headers.get(header_name, "")
+        if not resolved:
+            raise ValueError(
+                f"id_source header {header_name!r} is missing or empty "
+                f"on {request.method} {request.url.path}"
+            )
+        return resolved
 
     if id_source.startswith("query:"):
         query_name = id_source[6:]
-        return request.query_params.get(query_name, "")
+        resolved = request.query_params.get(query_name, "")
+        if not resolved:
+            raise ValueError(
+                f"id_source query parameter {query_name!r} is missing or empty "
+                f"on {request.method} {request.url.path}"
+            )
+        return resolved
 
     if id_source.startswith("static:"):
         return id_source[7:]
 
     # Default: path parameter
-    return str(request.path_params.get(id_source, ""))
+    resolved = str(request.path_params.get(id_source, ""))
+    if not resolved:
+        available = sorted(request.path_params.keys())
+        raise ValueError(
+            f"id_source path parameter {id_source!r} is missing or empty "
+            f"on {request.method} {request.url.path}; available path params: {available}"
+        )
+    return resolved
 
 
 @dataclass

@@ -15,6 +15,30 @@ T = TypeVar("T")
 logger = logging.getLogger("fastapi_topaz")
 
 
+def _require_object_id(obj_id: str, request: Request, expected_param: str) -> None:
+    """Raise 500 when a ReBAC dependency could not resolve a non-empty object ID.
+
+    An empty object ID means the route params do not match what the dependency
+    expects (e.g. route uses ``{doc_id}`` but the dependency reads ``id``).
+    Sending ``object_id=""`` to Topaz would silently check the wrong object.
+    """
+    if obj_id:
+        return
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", request.url.path)
+    logger.error(
+        "Could not resolve object ID for %s %s: expected %r, available path params: %s",
+        request.method,
+        route_path,
+        expected_param,
+        sorted(request.path_params.keys()),
+    )
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Authorization misconfiguration: could not resolve object ID",
+    )
+
+
 def require_policy_allowed(
     config: TopazConfig,
     policy_path: str,
@@ -201,11 +225,13 @@ def require_rebac_allowed(
         # Resolve object_id
         if callable(object_id):
             obj_id = object_id(request)
+            _require_object_id(obj_id, request, "<callable object_id>")
         elif object_id is not None:
             obj_id = object_id
         else:
             # Default: extract from path params
             obj_id = str(request.path_params.get("id", ""))
+            _require_object_id(obj_id, request, "id")
 
         # Start with resource context from provider (includes document data, user info, etc.)
         resource_ctx: ResourceContext = {}
@@ -288,10 +314,12 @@ def get_authorized_resource(
         # Resolve object_id
         if callable(object_id):
             obj_id = object_id(request)
+            _require_object_id(obj_id, request, "<callable object_id>")
         elif object_id is not None:
             obj_id = object_id
         else:
             obj_id = str(request.path_params.get("id", ""))
+            _require_object_id(obj_id, request, "id")
 
         # Check authorization
         resource_ctx: ResourceContext = {
@@ -358,6 +386,11 @@ def filter_authorized_resources(
         async def check_single(resource: T) -> tuple[T, bool]:
             """Check authorization for a single resource with semaphore limiting."""
             obj_id = id_extractor(resource)
+            if not obj_id:
+                raise ValueError(
+                    f"id_extractor returned an empty object ID for resource {resource!r}; "
+                    f"cannot authorize {relation} on {object_type}"
+                )
 
             resource_ctx: ResourceContext = {
                 "object_type": object_type,
@@ -439,7 +472,19 @@ def require_rebac_hierarchy(
     """
 
     async def dependency(request: Request) -> None:
-        result = await config.check_hierarchy(request, checks, mode, subject_type, optimize)
+        try:
+            result = await config.check_hierarchy(request, checks, mode, subject_type, optimize)
+        except ValueError as e:
+            logger.error(
+                "Could not resolve object ID in hierarchy check for %s %s: %s",
+                request.method,
+                request.url.path,
+                e,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Authorization misconfiguration: could not resolve object ID",
+            ) from e
 
         if not result.allowed:
             if result.denied_at:

@@ -7,10 +7,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aserto.client import AuthorizerOptions, Identity, IdentityType
+from fastapi import Request
 
 from fastapi_topaz._policy import normalize_hyphens
 from fastapi_topaz.cache import DecisionCache
-from fastapi_topaz.config import TopazConfig
+from fastapi_topaz.config import TopazConfig, _resolve_id_source
 
 
 def _make_config(**overrides):
@@ -163,3 +164,59 @@ class TestPolicyPathNormalizer:
         # Just verifying it's called - the exact transform doesn't matter
         result = config.policy_path_for("GET", "/test-path")
         assert "-" not in result
+
+
+def _make_request(path_params=None, headers=None, query_string=b"") -> Request:
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/docs/1",
+        "path_params": path_params or {},
+        "headers": [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()],
+        "query_string": query_string,
+    }
+    return Request(scope)
+
+
+class TestResolveIdSource:
+    """Regression (B5): empty resolved object IDs raise instead of yielding ''."""
+
+    def test_path_param_resolves(self):
+        request = _make_request(path_params={"doc_id": "doc-1"})
+        assert _resolve_id_source("doc_id", request) == "doc-1"
+
+    def test_missing_path_param_raises(self):
+        request = _make_request(path_params={"doc_id": "doc-1"})
+        with pytest.raises(ValueError, match="'id'.*doc_id"):
+            _resolve_id_source("id", request)
+
+    def test_header_resolves(self):
+        request = _make_request(headers={"X-Org-Id": "org-1"})
+        assert _resolve_id_source("header:X-Org-Id", request) == "org-1"
+
+    def test_missing_header_raises(self):
+        request = _make_request()
+        with pytest.raises(ValueError, match="X-Org-Id"):
+            _resolve_id_source("header:X-Org-Id", request)
+
+    def test_query_resolves(self):
+        request = _make_request(query_string=b"org=org-1")
+        assert _resolve_id_source("query:org", request) == "org-1"
+
+    def test_missing_query_raises(self):
+        request = _make_request()
+        with pytest.raises(ValueError, match="'org'"):
+            _resolve_id_source("query:org", request)
+
+    def test_static_resolves(self):
+        request = _make_request()
+        assert _resolve_id_source("static:global", request) == "global"
+
+    def test_callable_resolves(self):
+        request = _make_request(path_params={"doc_id": "doc-1"})
+        assert _resolve_id_source(lambda r: r.path_params["doc_id"], request) == "doc-1"
+
+    def test_callable_returning_empty_raises(self):
+        request = _make_request()
+        with pytest.raises(ValueError, match="callable"):
+            _resolve_id_source(lambda r: "", request)
