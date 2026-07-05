@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `TopazConfig(insecure=...)`: first-class plaintext (non-TLS) gRPC channel option for local development, replacing ad-hoc monkey-patching
+- `fastapi_topaz.__version__` exposing the installed package version
+
+### Changed
+
+- Denied authorization responses from dependencies now return a generic `"Forbidden"` detail (matching the middleware) instead of leaking the policy path, relation, or denied hierarchy level; the details remain in DEBUG logs and audit events
+- Per-request dependency log lines (check/result/granted/denied) moved from INFO/WARNING to DEBUG; the audit logger is the structured record for decisions
+- Middleware caches route matches for static paths (no path parameters), skipping the per-request route scan
+- `policy_groups` and `default_policy` are validated on every assignment, not only at construction
+- Decision-cache and stale-cache keys use a shared helper with JSON-based context serialization stable across nested-dict key ordering
+
+### Removed
+
+- Dead no-op fixture stubs in `fastapi_topaz.testing` (`pytest_configure`, `mock_topaz_config_fixture`, `allow_all_auth_fixture`, `deny_all_auth_fixture`)
+- Ineffective PolicyGroup overlap warning that only probed hardcoded prefixes
+
 ### Fixed
+
+- pyproject URLs now point to this project instead of the upstream Topaz repository
+- CLI output uses plain text instead of unicode symbols
+- Documentation deploy workflow now requires quality checks and tests to pass before deploying
 
 - Circuit breaker now detects gRPC errors (`grpc.RpcError`, including `grpc.aio.AioRpcError`) as failures based on their status code, so the breaker actually trips during Topaz outages; previously the default `failure_exceptions` never matched gRPC errors
 - Authorization checks now reuse a single long-lived gRPC channel instead of opening (and never closing) a new secure channel per request, eliminating a channel and file-descriptor leak
@@ -45,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CircuitBreaker.cache_priority`: has no effect; warns when set and will be removed in 2.0
 - `fastapi_topaz.AuthorizationError` and the `IdentityMapper`/`StringMapper`/`ObjectMapper`/`ResourceMapper` type aliases: served lazily with a `DeprecationWarning` on import and will be removed in 2.0
 
-## [1.1.0]
+## [1.1.0] - 2026-02-13
 
 ### Added
 
@@ -154,7 +176,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - aserto >= 0.32.2
 - Python >= 3.9
 
-[Unreleased]: https://github.com/jmanteau/fastapi-topaz/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/jmanteau/fastapi-topaz/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jmanteau/fastapi-topaz/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/jmanteau/fastapi-topaz/releases/tag/v1.0.1
 [1.0.0]: https://github.com/jmanteau/fastapi-topaz/releases/tag/v1.0.0
 [0.1.0]: https://github.com/jmanteau/fastapi-topaz/releases/tag/v0.1.0
