@@ -12,6 +12,7 @@ Test organization:
 - TestOTelTracingIntegration: Integration with TopazConfig
 - TestCombinedObservability: Using both metrics and tracing together
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
@@ -106,7 +107,9 @@ class TestPrometheusMetricsIntegration:
         )
         assert config.metrics is metrics
 
-    def test_metrics_recorded_on_auth_check(self, authorizer_options, identity_provider, patch_client):
+    def test_metrics_recorded_on_auth_check(
+        self, authorizer_options, identity_provider, patch_client
+    ):
         """Metrics should be recorded during authorization check."""
         metrics = PrometheusMetrics()
         config = TopazConfig(
@@ -230,6 +233,37 @@ class TestCombinedObservability:
         client = TestClient(app)
         response = client.get("/test")
         assert response.status_code == 200
+
+    def test_cache_hit_records_actual_decision(
+        self, authorizer_options, identity_provider, patch_client
+    ):
+        """Regression (B1): cache hits must record the cached decision, not "denied"."""
+        metrics = Mock()
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            decision_cache=DecisionCache(ttl_seconds=60),
+            metrics=metrics,
+        )
+
+        app = FastAPI()
+
+        @app.get("/test")
+        def route(request: Request, _=Depends(require_policy_allowed(config, "test.policy"))):
+            return {"status": "ok"}
+
+        client = TestClient(app)
+
+        # First request populates the cache
+        assert client.get("/test").status_code == 200
+        # Second request is served from cache
+        assert client.get("/test").status_code == 200
+
+        metrics.record_cache_hit.assert_called_once()
+        cached_call = metrics.record_auth_request.call_args_list[-1]
+        assert cached_call.kwargs["decision"] == "allowed"
 
     def test_with_caching(self, authorizer_options, identity_provider, patch_client):
         """Should work with caching, metrics, and tracing."""

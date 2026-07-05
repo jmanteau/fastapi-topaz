@@ -314,7 +314,8 @@ class TopazConfig:
                     cached_result = True
                     if self.metrics:
                         self.metrics.record_cache_hit(source)
-                    return cached
+                    result = cached
+                    return result
                 else:
                     if self.metrics:
                         self.metrics.record_cache_miss(source)
