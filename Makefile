@@ -5,7 +5,8 @@
 .PHONY: help setup clean lint lint-fix quality test test-fast ci info
 .PHONY: docs docs-serve docs-build docs-deploy
 .PHONY: py-security typecheck version build test-upload upload git-status git-tag release
-.PHONY: int-build int-up int-down int-restart int-restart-webapp int-clean int-status int-setup
+.PHONY: int-build int-up int-up-topaz int-down int-restart int-restart-webapp int-clean int-status int-setup
+.PHONY: live-test live-test-fast
 .PHONY: int-logs int-logs1 int-logs5 int-logs-webapp int-logs-topaz int-logs-authentik
 .PHONY: int-db-upgrade int-db-migrate int-db-downgrade int-db-shell
 .PHONY: int-shell int-topaz-shell int-topaz-reload int-auth-password int-certs
@@ -122,6 +123,18 @@ int-up: ## Start all services
 	if [ ! -f .env ]; then cat env.authentik .env.example > .env 2>/dev/null || cat env.authentik > .env; fi && \
 	docker-compose up -d
 	@echo "Services: Webapp http://localhost:8000 | Authentik http://localhost:9000"
+
+int-up-topaz: ## Start only the Topaz container
+	@cd $(INT_DIR) && \
+	if [ ! -f .env ]; then cat env.authentik .env.example > .env 2>/dev/null || cat env.authentik > .env; fi && \
+	docker-compose up -d topaz
+	@echo "Topaz: grpc://localhost:8282 (TLS) | health http://localhost:9494"
+
+live-test: int-up-topaz ## Run live-Topaz integration tests (stops/starts topaz)
+	uv run pytest integration-tests/live -c integration-tests/live/pytest.ini -v
+
+live-test-fast: int-up-topaz ## Live tests excluding disruptive (container stop/start) tests
+	uv run pytest integration-tests/live -c integration-tests/live/pytest.ini -v -m "not disruptive"
 
 int-down: ## Stop all services
 	cd $(INT_DIR) && docker-compose down
