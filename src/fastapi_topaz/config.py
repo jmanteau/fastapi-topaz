@@ -179,10 +179,13 @@ class TopazConfig:
         self.metrics = metrics
         self.tracing = tracing
         self._authorizer = SharedAuthorizerClient(authorizer_options)
-        self._semaphore = asyncio.Semaphore(max_concurrent_checks)
+        # asyncio primitives are created lazily on first use: on Python 3.9
+        # they bind the event loop active at creation time, and configs are
+        # typically created at module import, outside any loop
+        self._semaphore: asyncio.Semaphore | None = None
         # Stale cache for circuit breaker fallback (stores entries beyond normal TTL)
         self._stale_cache: dict[str, tuple[bool, float]] = {}
-        self._stale_cache_lock = asyncio.Lock()
+        self._stale_cache_lock: asyncio.Lock | None = None
 
         # Validate policy_groups regex patterns at config creation time
         if self.policy_groups:
@@ -197,6 +200,22 @@ class TopazConfig:
         # Configure connection pool with authorizer options
         if self.connection_pool:
             self.connection_pool.configure(authorizer_options)
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """Lazily create the concurrency semaphore from within a running loop.
+
+        No lock needed: the check-and-assign is synchronous, so it cannot be
+        interleaved by other tasks on the same event loop.
+        """
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self.max_concurrent_checks)
+        return self._semaphore
+
+    def _get_stale_cache_lock(self) -> asyncio.Lock:
+        """Lazily create the stale-cache lock from within a running loop."""
+        if self._stale_cache_lock is None:
+            self._stale_cache_lock = asyncio.Lock()
+        return self._stale_cache_lock
 
     def create_client(self, request: Request) -> AuthorizerClient:
         """Create a Topaz authorizer client with identity from request.
@@ -233,7 +252,7 @@ class TopazConfig:
             return None
 
         key = self._make_stale_cache_key(identity_value, policy_path, decision, resource_context)
-        async with self._stale_cache_lock:
+        async with self._get_stale_cache_lock():
             if key not in self._stale_cache:
                 return None
 
@@ -260,7 +279,7 @@ class TopazConfig:
             return
 
         key = self._make_stale_cache_key(identity_value, policy_path, decision, resource_context)
-        async with self._stale_cache_lock:
+        async with self._get_stale_cache_lock():
             self._stale_cache[key] = (value, time.monotonic())
 
             # Simple size limit - remove oldest entries if too large
@@ -627,7 +646,7 @@ class TopazConfig:
         """
 
         async def check_single_relation(rel: str) -> tuple[str, bool]:
-            async with self._semaphore:
+            async with self._get_semaphore():
                 result = await self.check_relation(
                     request,
                     object_type=object_type,
@@ -732,7 +751,7 @@ class TopazConfig:
         ) -> tuple[str, str, str, bool]:
             object_type, id_source, relation = check
             object_id = _resolve_id_source(id_source, request)
-            async with self._semaphore:
+            async with self._get_semaphore():
                 allowed = await self.check_relation(
                     request, object_type, object_id, relation, subject_type
                 )

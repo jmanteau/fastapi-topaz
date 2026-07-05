@@ -60,9 +60,14 @@ class TestStaleCacheSafety:
     """Tests for async lock on stale cache (H1 fix)."""
 
     @pytest.mark.asyncio
-    async def test_stale_cache_lock_exists(self):
+    async def test_stale_cache_lock_created_lazily(self):
+        """Regression (B6): the lock is created on first use inside a running
+        loop, so it never binds a stale loop on Python 3.9."""
         config = _make_config()
-        assert isinstance(config._stale_cache_lock, asyncio.Lock)
+        assert config._stale_cache_lock is None
+        lock = config._get_stale_cache_lock()
+        assert isinstance(lock, asyncio.Lock)
+        assert config._get_stale_cache_lock() is lock
 
     @pytest.mark.asyncio
     async def test_concurrent_stale_cache_access(self):
@@ -81,20 +86,33 @@ class TestStaleCacheSafety:
         assert all(r is True for r in results)
 
 
-class TestSemaphoreEagerInit:
-    """Tests for eager semaphore initialization (M2 fix)."""
+class TestSemaphoreLazyInit:
+    """Regression (B6): asyncio primitives are created lazily on first use.
 
-    def test_semaphore_set_at_init(self):
+    On Python 3.9 asyncio.Semaphore/Lock bind the event loop active at
+    creation time; configs are typically created at module import, outside
+    any loop, so eager creation breaks under a different running loop.
+    """
+
+    def test_semaphore_not_created_at_init(self):
         config = _make_config()
-        assert isinstance(config._semaphore, asyncio.Semaphore)
+        assert config._semaphore is None
 
-    def test_semaphore_respects_max_concurrent(self):
+    @pytest.mark.asyncio
+    async def test_semaphore_respects_max_concurrent(self):
         config = _make_config(max_concurrent_checks=5)
-        assert config._semaphore._value == 5
+        assert config._get_semaphore()._value == 5
 
-    def test_semaphore_default_value(self):
+    @pytest.mark.asyncio
+    async def test_semaphore_default_value(self):
         config = _make_config()
-        assert config._semaphore._value == 10
+        assert config._get_semaphore()._value == 10
+
+    @pytest.mark.asyncio
+    async def test_semaphore_created_once(self):
+        config = _make_config()
+        sem = config._get_semaphore()
+        assert config._get_semaphore() is sem
 
 
 class TestLocalsAntiPatternFix:

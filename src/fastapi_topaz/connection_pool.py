@@ -4,6 +4,7 @@ Connection pooling for efficient gRPC connection reuse.
 Manages a pool of AuthorizerClient connections to reduce overhead
 and improve performance for high-throughput applications.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -128,9 +129,7 @@ class ConnectionPool:
     )
     _semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
-    _connections: set[PooledConnection] = field(
-        default_factory=set, init=False, repr=False
-    )
+    _connections: set[PooledConnection] = field(default_factory=set, init=False, repr=False)
     _busy: set[PooledConnection] = field(default_factory=set, init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
@@ -148,7 +147,8 @@ class ConnectionPool:
             stacklevel=2,
         )
         self._authorizer_options = authorizer_options
-        self._semaphore = asyncio.Semaphore(self.max_connections)
+        # Semaphore is created lazily in initialize(): on Python 3.9 asyncio
+        # primitives bind the event loop active at creation time
 
     async def initialize(self) -> None:
         """Initialize the pool, optionally creating min_connections."""

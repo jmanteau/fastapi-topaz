@@ -14,6 +14,7 @@ from .config import TopazConfig
 T = TypeVar("T")
 logger = logging.getLogger("fastapi_topaz")
 
+
 def require_policy_allowed(
     config: TopazConfig,
     policy_path: str,
@@ -65,8 +66,7 @@ def require_policy_allowed(
 
         if not allowed:
             logger.warning(
-                f"Access DENIED: path={policy_path}, identity={identity.value}, "
-                f"context={ctx}"
+                f"Access DENIED: path={policy_path}, identity={identity.value}, context={ctx}"
             )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -126,7 +126,9 @@ def require_policy_auto(
 
         # Generate policy path
         policy_path = _resolve_policy_path(
-            config.policy_path_root, method, route_path,
+            config.policy_path_root,
+            method,
+            route_path,
             config.policy_path_normalizer,
         )
 
@@ -152,8 +154,7 @@ def require_policy_auto(
 
         if not allowed:
             logger.warning(
-                f"Access DENIED: path={policy_path}, identity={identity.value}, "
-                f"context={ctx}"
+                f"Access DENIED: path={policy_path}, identity={identity.value}, context={ctx}"
             )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -212,12 +213,14 @@ def require_rebac_allowed(
             resource_ctx.update(config.resource_context_provider(request))
 
         # Add ReBAC-specific fields
-        resource_ctx.update({
-            "object_type": object_type,
-            "object_id": obj_id,
-            "relation": relation,
-            "subject_type": subject_type,
-        })
+        resource_ctx.update(
+            {
+                "object_type": object_type,
+                "object_id": obj_id,
+                "relation": relation,
+                "subject_type": subject_type,
+            }
+        )
 
         policy_path = f"{config.policy_path_root}.check"
 
@@ -366,10 +369,8 @@ def filter_authorized_resources(
             policy_path = f"{config.policy_path_root}.check"
 
             # Use semaphore to limit concurrent checks
-            async with config._semaphore:
-                allowed = await config.check_decision(
-                    request, policy_path, "allowed", resource_ctx
-                )
+            async with config._get_semaphore():
+                allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
 
             return resource, allowed
 
@@ -438,9 +439,7 @@ def require_rebac_hierarchy(
     """
 
     async def dependency(request: Request) -> None:
-        result = await config.check_hierarchy(
-            request, checks, mode, subject_type, optimize
-        )
+        result = await config.check_hierarchy(request, checks, mode, subject_type, optimize)
 
         if not result.allowed:
             if result.denied_at:
