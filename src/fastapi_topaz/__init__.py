@@ -1,13 +1,8 @@
+from typing import Any
+
 from aserto.client import AuthorizerOptions, Identity, IdentityType, ResourceContext
 
-from ._defaults import (
-    AuthorizationError,
-    IdentityMapper,
-    Obj,
-    ObjectMapper,
-    ResourceMapper,
-    StringMapper,
-)
+from ._defaults import Obj
 from ._policy import normalize_hyphens
 from .audit import AuditEvent, AuditLogger
 from .cache import DecisionCache
@@ -24,6 +19,31 @@ from .dependencies import (
 )
 from .middleware import SkipMiddleware, TopazMiddleware, skip_middleware
 from .observability import OTelTracing, PrometheusMetrics
+
+# Deprecated aliases served lazily so importing them emits a warning
+_DEPRECATED_DEFAULTS = (
+    "AuthorizationError",
+    "IdentityMapper",
+    "StringMapper",
+    "ObjectMapper",
+    "ResourceMapper",
+)
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DEPRECATED_DEFAULTS:
+        import warnings
+
+        warnings.warn(
+            f"fastapi_topaz.{name} is deprecated and will be removed in 2.0",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        from . import _defaults
+
+        return getattr(_defaults, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Core

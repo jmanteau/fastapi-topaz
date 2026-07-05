@@ -30,6 +30,18 @@ class TestCacheBasics:
 
         assert result is None
 
+    async def test_size(self):
+        """size() reflects the number of stored entries."""
+        cache = DecisionCache(ttl_seconds=60)
+        assert cache.size() == 0
+
+        await cache.set("user1", "/admin", "allow", None, True)
+        await cache.set("user2", "/admin", "allow", None, False)
+        assert cache.size() == 2
+
+        await cache.clear()
+        assert cache.size() == 0
+
     async def test_clear(self):
         """Test clearing the cache."""
         cache = DecisionCache(ttl_seconds=60)

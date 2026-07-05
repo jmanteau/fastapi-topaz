@@ -166,6 +166,92 @@ class TestPolicyPathNormalizer:
         assert "-" not in result
 
 
+class TestCircuitMetricsAutoWiring:
+    """D5: circuit breaker metrics are recorded automatically when metrics
+    are configured and the user has not installed an on_state_change callback."""
+
+    def test_auto_wires_on_state_change(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        metrics = Mock()
+        cb = CircuitBreaker()
+        _make_config(metrics=metrics, circuit_breaker=cb)
+
+        assert cb.on_state_change is not None
+        cb.on_state_change("closed", "open", "failure_threshold_exceeded")
+        metrics.record_circuit_transition.assert_called_once_with("closed", "open")
+        metrics.set_circuit_state.assert_called_once_with(1)
+
+    def test_state_gauge_values(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        metrics = Mock()
+        cb = CircuitBreaker()
+        _make_config(metrics=metrics, circuit_breaker=cb)
+
+        cb.on_state_change("open", "half_open", "recovery_timeout_expired")
+        metrics.set_circuit_state.assert_called_with(2)
+        cb.on_state_change("half_open", "closed", "test_succeeded")
+        metrics.set_circuit_state.assert_called_with(0)
+
+    def test_user_callback_not_overwritten(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        user_callback = Mock()
+        cb = CircuitBreaker(on_state_change=user_callback)
+        _make_config(metrics=Mock(), circuit_breaker=cb)
+
+        assert cb.on_state_change is user_callback
+
+    def test_no_wiring_without_metrics(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        cb = CircuitBreaker()
+        _make_config(circuit_breaker=cb)
+
+        assert cb.on_state_change is None
+
+
+class TestCacheSizeGauge:
+    """D5: check_decision updates the cache-size gauge after caching a decision."""
+
+    @pytest.mark.asyncio
+    async def test_set_cache_size_called_after_cache_store(self):
+        from unittest.mock import MagicMock
+
+        metrics = Mock()
+        cache = DecisionCache()
+        config = _make_config(metrics=metrics, decision_cache=cache)
+
+        mock_authorizer = Mock()
+        mock_authorizer.decisions = AsyncMock(return_value={"allowed": True})
+        config._authorizer = mock_authorizer
+
+        request = MagicMock()
+        request.path_params = {}
+        await config.check_decision(request, "test.GET.docs", "allowed")
+
+        metrics.set_cache_size.assert_called_once_with(1)
+        assert cache.size() == 1
+
+    @pytest.mark.asyncio
+    async def test_set_cache_size_not_called_without_cache(self):
+        from unittest.mock import MagicMock
+
+        metrics = Mock()
+        config = _make_config(metrics=metrics)
+
+        mock_authorizer = Mock()
+        mock_authorizer.decisions = AsyncMock(return_value={"allowed": True})
+        config._authorizer = mock_authorizer
+
+        request = MagicMock()
+        request.path_params = {}
+        await config.check_decision(request, "test.GET.docs", "allowed")
+
+        metrics.set_cache_size.assert_not_called()
+
+
 def _make_request(path_params=None, headers=None, query_string=b"") -> Request:
     scope = {
         "type": "http",

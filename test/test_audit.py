@@ -352,3 +352,62 @@ class TestAuditFromCheckDecision:
         assert events[0].object_type == "document"
         assert events[0].object_id == "doc-1"
         assert events[0].relation == "can_read"
+
+
+class TestD5AuditKnobs:
+    """D5: log_skipped and include_request_headers are functional."""
+
+    @pytest.mark.asyncio
+    async def test_log_skipped_event(self):
+        events = []
+        logger = AuditLogger(handler=events.append, log_skipped=True)
+        await logger.log_skipped_event(None, "excluded")
+        assert len(events) == 1
+        assert events[0].event == "authorization.middleware.skipped"
+        assert events[0].reason == "excluded"
+
+    @pytest.mark.asyncio
+    async def test_log_skipped_disabled_by_default(self):
+        events = []
+        logger = AuditLogger(handler=events.append)
+        await logger.log_skipped_event(None, "excluded")
+        assert len(events) == 0
+
+    @pytest.mark.asyncio
+    async def test_include_request_headers_redacts_credentials(self):
+        events = []
+        request = Mock()
+        request.method = "GET"
+        request.url = Mock()
+        request.url.path = "/test"
+        request.headers = {
+            "authorization": "Bearer secret",
+            "cookie": "session=abc",
+            "x-tenant": "acme",
+            "x-request-id": "req-1",
+        }
+        request.client = None
+
+        logger = AuditLogger(handler=events.append, include_request_headers=True)
+        await logger.log_decision(request, "test", True)
+
+        headers = events[0].to_dict()["request"]["headers"]
+        assert headers["authorization"] == "[REDACTED]"
+        assert headers["cookie"] == "[REDACTED]"
+        assert headers["x-tenant"] == "acme"
+
+    @pytest.mark.asyncio
+    async def test_headers_absent_by_default(self):
+        events = []
+        request = Mock()
+        request.method = "GET"
+        request.url = Mock()
+        request.url.path = "/test"
+        request.headers = {"x-tenant": "acme"}
+        request.client = None
+
+        logger = AuditLogger(handler=events.append)
+        await logger.log_decision(request, "test", True)
+
+        assert events[0].request_headers is None
+        assert "headers" not in events[0].to_dict().get("request", {})

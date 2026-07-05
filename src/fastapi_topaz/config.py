@@ -167,7 +167,10 @@ class TopazConfig:
         connection_pool: Deprecated, has no effect on authorization calls
             (authorization checks use a single shared gRPC channel)
         audit_logger: Optional audit logger for authorization decisions
-        metrics: Optional Prometheus metrics collector
+        metrics: Optional Prometheus metrics collector. When combined with
+            circuit_breaker and no user-provided on_state_change callback,
+            circuit transitions and the state gauge are recorded automatically
+            (a user-provided callback takes precedence).
         tracing: Optional OpenTelemetry tracing
     """
 
@@ -231,6 +234,18 @@ class TopazConfig:
         # Configure connection pool with authorizer options
         if self.connection_pool:
             self.connection_pool.configure(authorizer_options)
+
+        # Auto-wire circuit breaker metrics: record transitions and the state
+        # gauge unless the user installed their own on_state_change callback
+        if self.metrics and self.circuit_breaker and self.circuit_breaker.on_state_change is None:
+            state_values = {"closed": 0, "open": 1, "half_open": 2}
+            metrics = self.metrics
+
+            def _record_circuit_metrics(old_state: str, new_state: str, reason: str) -> None:
+                metrics.record_circuit_transition(old_state, new_state)
+                metrics.set_circuit_state(state_values.get(new_state, 0))
+
+            self.circuit_breaker.on_state_change = _record_circuit_metrics
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         """Lazily create the concurrency semaphore from within a running loop.
@@ -439,6 +454,8 @@ class TopazConfig:
                 await self.decision_cache.set(
                     identity_value, policy_path, decision, resource_context, result
                 )
+                if self.metrics:
+                    self.metrics.set_cache_size(self.decision_cache.size())
 
             # Store in stale cache for circuit breaker fallback
             await self._set_stale_cached(

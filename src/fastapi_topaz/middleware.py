@@ -256,6 +256,9 @@ class TopazMiddleware:
 
         # Check exclusions
         if self._is_excluded(method, path, route):
+            audit_logger = self.config.audit_logger
+            if audit_logger is not None and audit_logger.log_skipped:
+                await audit_logger.log_skipped_event(Request(scope, receive), "excluded")
             await self.app(scope, receive, send)
             return
 

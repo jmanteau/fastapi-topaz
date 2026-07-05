@@ -60,6 +60,7 @@ class AuditEvent:
     reason: str | None = None
     results: dict[str, bool] | None = None  # For batch checks
     resource_context: dict[str, Any] | None = None
+    request_headers: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to structured dict for logging."""
@@ -109,6 +110,8 @@ class AuditEvent:
             req["route_pattern"] = self.route_pattern
         if self.client_ip:
             req["ip"] = self.client_ip
+        if self.request_headers:
+            req["headers"] = self.request_headers
         if req:
             data["request"] = req
 
@@ -205,6 +208,17 @@ class AuditLogger:
             return request.client.host
         return None
 
+    _REDACTED_HEADERS = ("authorization", "cookie")
+
+    def _collect_headers(self, request: Request | None) -> dict[str, str] | None:
+        """Collect request headers with credential values redacted."""
+        if not self.include_request_headers or request is None:
+            return None
+        return {
+            name: "[REDACTED]" if name.lower() in self._REDACTED_HEADERS else value
+            for name, value in request.headers.items()
+        }
+
     async def _emit(self, event: AuditEvent) -> None:
         """Emit event to handler or default logger."""
         if self.handler:
@@ -269,6 +283,7 @@ class AuditLogger:
             resource_context=resource_context if self.include_resource_context else None,
             policy_resolution_source=policy_resolution_source,
             reason=reason,
+            request_headers=self._collect_headers(request),
         )
 
         await self._emit(event)
@@ -301,6 +316,28 @@ class AuditLogger:
             object_type=object_type,
             object_id=object_id,
             results=results,
+        )
+
+        await self._emit(event)
+
+    async def log_skipped_event(
+        self,
+        request: Request | None,
+        reason: str = "excluded",
+    ) -> None:
+        """Log a request that skipped authorization (excluded route/method)."""
+        if not self.log_skipped:
+            return
+
+        event = AuditEvent(
+            event="authorization.middleware.skipped",
+            level=self.level_skipped,
+            request_id=self._get_request_id(request),
+            source="middleware",
+            method=request.method if request else None,
+            path=str(request.url.path) if request else None,
+            client_ip=self._get_client_ip(request),
+            reason=reason,
         )
 
         await self._emit(event)

@@ -1,6 +1,7 @@
 """
 In-memory TTL cache for authorization decisions.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -97,6 +98,10 @@ class DecisionCache:
                 value=value,
                 expires_at=time.monotonic() + self.ttl_seconds,
             )
+
+    def size(self) -> int:
+        """Current number of cached entries (may include expired ones)."""
+        return len(self._cache)
 
     async def clear(self) -> None:
         """Clear all cached entries."""

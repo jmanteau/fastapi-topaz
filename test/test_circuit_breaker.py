@@ -476,3 +476,22 @@ class TestGrpcFailureDetection:
                 with pytest.raises(_FakeRpcError):
                     await client.get("/test")
             assert cb.state == CircuitState.CLOSED
+
+
+class TestDeprecatedKnobs:
+    """D5: timeout_ms and cache_priority warn when set to non-default values."""
+
+    def test_timeout_ms_warns_when_set(self):
+        with pytest.warns(DeprecationWarning, match="timeout_ms"):
+            CircuitBreaker(timeout_ms=1000)
+
+    def test_cache_priority_warns_when_set(self):
+        with pytest.warns(DeprecationWarning, match="cache_priority"):
+            CircuitBreaker(cache_priority=["policy.a"])
+
+    def test_defaults_do_not_warn(self):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            CircuitBreaker()
