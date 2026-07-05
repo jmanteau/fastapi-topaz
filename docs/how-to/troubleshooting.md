@@ -55,8 +55,8 @@ grpc._channel._InactiveRpcError: <_InactiveRpcError of RPC that terminated with:
    ```python
    config = TopazConfig(
        ...
+       check_timeout=5.0,  # gRPC deadline in seconds per authorization call
        circuit_breaker=CircuitBreaker(
-           timeout_ms=5000,
            fallback="cache_then_deny",
        ),
    )

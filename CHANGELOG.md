@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scan_routes` (and therefore `generate-policies`, `policy-diff`, and `generate-rights-matrix`) now applies the configured `policy_path_normalizer`, so generated policies match what the runtime evaluates instead of drifting on e.g. hyphenated paths
 - `policy_diff` no longer reports `default_policy` and `PolicyGroup` policy files as orphaned, so a correctly configured resolution chain passes `policy-diff --strict`
 - `TopazConfig` and `ConnectionPool` now create their asyncio primitives lazily on first use instead of at construction, fixing "attached to a different loop" errors on Python 3.9 when the config is created at module import time
+- Dependencies now raise 500 on unresolvable or empty object IDs (missing path param, header, or query param) instead of silently checking against `object_id=""` in Topaz
+- Creating a second `PrometheusMetrics` instance no longer crashes with a duplicate-registration error; existing collectors are reused from the registry
 
 ### Added
 
@@ -25,11 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CircuitBreaker(failure_grpc_codes=...)`: set of gRPC status codes treated as failures (default: UNAVAILABLE, DEADLINE_EXCEEDED, UNKNOWN, INTERNAL, RESOURCE_EXHAUSTED); policy errors such as INVALID_ARGUMENT do not trip the breaker
 - `AuditLogger.log_decision(reason=...)`: optional reason field forwarded to the audit event
 - GitHub Actions CI workflow running lint, typecheck, and tests across Python 3.9-3.13 on pushes to main and pull requests
+- `AuditLogger(include_request_headers=True)` now works: request headers are included in audit events with `authorization` and `cookie` values redacted
+- `AuditLogger(log_skipped=True)` now works: excluded routes and methods emit `authorization.middleware.skipped` events at `level_skipped`
+- Circuit-breaker metrics auto-wiring: when `metrics` and `circuit_breaker` are both configured and no user `on_state_change` callback is set, circuit transitions and the state gauge are recorded automatically
+- Cache-size gauge: `check_decision` updates `topaz_cache_size` after each cached decision when `metrics` and `decision_cache` are configured
+- `DecisionCache.size()`: current number of cached entries
+
+### Changed
+
+- Audit events are now emitted from `check_decision` for all sources (middleware, dependency, manual), so dependency and manual checks are audited too; previously only the middleware emitted decision events
 
 ### Deprecated
 
 - `ConnectionPool`: has no effect on authorization calls (they use the shared channel) and will be removed in 2.0; it now closes underlying channels when discarding connections and emits a `DeprecationWarning` on `configure()`
 - `TopazConfig.create_client()`: no longer used internally; each call opens a new channel the caller must close; will be removed in 2.0
+- `CircuitBreaker.timeout_ms`: has no effect; use `TopazConfig.check_timeout` instead; warns on non-default values and will be removed in 2.0
+- `CircuitBreaker.cache_priority`: has no effect; warns when set and will be removed in 2.0
+- `fastapi_topaz.AuthorizationError` and the `IdentityMapper`/`StringMapper`/`ObjectMapper`/`ResourceMapper` type aliases: served lazily with a `DeprecationWarning` on import and will be removed in 2.0
 
 ## [1.1.0]
 

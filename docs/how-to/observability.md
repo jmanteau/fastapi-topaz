@@ -47,8 +47,11 @@ app.mount("/metrics", metrics_app)
 | `topaz_errors_total` | Counter | error_type | Authorization errors |
 | `topaz_circuit_transitions_total` | Counter | from_state, to_state | Circuit state changes |
 | `topaz_circuit_state` | Gauge | - | Current circuit state (0=closed, 1=open, 2=half_open) |
+| `topaz_cache_size` | Gauge | - | Current number of entries in the decision cache |
 | `topaz_auth_latency_seconds` | Histogram | source, cached | End-to-end latency |
 | `topaz_topaz_latency_seconds` | Histogram | - | Topaz call latency |
+
+The circuit-breaker metrics (`topaz_circuit_transitions_total`, `topaz_circuit_state`) are recorded automatically when both `metrics` and `circuit_breaker` are configured on `TopazConfig` and you have not set your own `CircuitBreaker.on_state_change` callback — a user-provided callback takes precedence, so wire the metric calls yourself in that case. The cache-size gauge (`topaz_cache_size`) is updated automatically after each cached decision when both `metrics` and `decision_cache` are configured.
 
 ### Example Output
 

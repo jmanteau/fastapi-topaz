@@ -37,6 +37,8 @@ authorization.check.allowed           # is_allowed() returned True
 authorization.check.denied            # is_allowed() returned False
 ```
 
+Audit events are emitted from the core `check_decision` path, so every authorization check produces exactly one event regardless of how it was triggered — middleware, dependency, or manual API (`is_allowed`, `check_relation`, ...). Manual-check events require `log_manual_checks=True`. With `log_skipped=True`, requests that bypass authorization (excluded routes or methods) emit `authorization.middleware.skipped` events at `level_skipped`.
+
 ## Log Schema
 
 ### Allowed Access
@@ -128,10 +130,11 @@ ORDER BY denied_count DESC
 |-----------|------|---------|-------------|
 | log_allowed | bool | True | Log successful authorizations |
 | log_denied | bool | True | Log denied authorizations |
-| log_skipped | bool | False | Log excluded routes |
+| log_skipped | bool | False | Log excluded routes as `authorization.middleware.skipped` events |
 | log_unauthenticated | bool | True | Log 401 events |
 | log_manual_checks | bool | False | Log is_allowed() calls |
 | include_resource_context | bool | True | Include resource details |
+| include_request_headers | bool | False | Include HTTP request headers in events; `authorization` and `cookie` values are redacted |
 | handler | Callable | None | Custom async handler |
 
 ## See Also

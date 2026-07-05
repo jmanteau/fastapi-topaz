@@ -254,6 +254,12 @@ from fastapi_topaz import (
 
 ### AuthorizationError
 
+!!! warning "Deprecated"
+    `fastapi_topaz.AuthorizationError` is deprecated and will be removed in 2.0.
+    Importing it emits a `DeprecationWarning`. It is not raised by any
+    fastapi-topaz code path; authorization failures surface as
+    `HTTPException(403)`.
+
 ::: fastapi_topaz.AuthorizationError
     options:
       show_root_heading: false
@@ -261,6 +267,11 @@ from fastapi_topaz import (
 ---
 
 ## Type Aliases
+
+!!! warning "Deprecated"
+    The `IdentityMapper`, `StringMapper`, `ObjectMapper`, and `ResourceMapper`
+    aliases are deprecated and will be removed in 2.0. Importing them from
+    `fastapi_topaz` emits a `DeprecationWarning`.
 
 ```python
 from fastapi_topaz._defaults import (

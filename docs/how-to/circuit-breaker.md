@@ -116,7 +116,7 @@ async def health():
 | fallback | str/Callable | "cache_then_deny" | Fallback strategy |
 | serve_stale_cache | bool | True | Serve expired cache when open |
 | stale_cache_ttl | float | 300.0 | Max stale age to serve |
-| timeout_ms | int | 5000 | Request timeout |
+| timeout_ms | int | 5000 | Deprecated, no effect; use `TopazConfig.check_timeout` (removal in 2.0) |
 
 ## See Also
 
