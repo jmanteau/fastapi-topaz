@@ -183,19 +183,19 @@ class TestPolicyDiffResolutionChain:
             group_path.parent.mkdir(parents=True, exist_ok=True)
             group_path.write_text("package myapp.admin\n")
 
-            # Create config with policy group
+            # Create config with policy group matching the route templates
             group = PolicyGroup(
-                url_pattern=r"^/documents/\d+$",
+                url_pattern=r"^/documents/\{id\}$",
                 policy_path="myapp.admin",
             )
             config.policy_groups = [group]
 
             diff = policy_diff(sample_app, config, tmpdir)
 
-            # Routes matching the group pattern should be in group_covered
-            # The group pattern won't match our test routes, so check that
-            # the group_covered list exists
-            assert hasattr(diff, "group_covered")
+            # GET/PUT/DELETE /documents/{id} match the group pattern
+            assert len(diff.group_covered) == 3
+            # The group policy itself must not be flagged as orphaned (B4)
+            assert diff.orphaned == []
 
     def test_policy_diff_default_covered(self, sample_app, config):
         """policy_diff marks routes as default_covered when default policy exists."""
@@ -251,6 +251,66 @@ class TestPolicyDiffResolutionChain:
             diff = policy_diff(sample_app, config, tmpdir)
 
             assert "myapp.GET.orphaned" in diff.orphaned
+
+    def test_default_policy_not_orphaned(self, sample_app, config):
+        """Regression (B4): a configured default_policy file must not be orphaned."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            default_path = Path(tmpdir) / "myapp/defaults/open.rego"
+            default_path.parent.mkdir(parents=True, exist_ok=True)
+            default_path.write_text("package myapp.defaults.open\n")
+
+            config.default_policy = "myapp.defaults.open"
+
+            diff = policy_diff(sample_app, config, tmpdir)
+
+            assert diff.orphaned == []
+
+    def test_group_policy_not_orphaned(self, sample_app, config):
+        """Regression (B4): a configured PolicyGroup policy file must not be orphaned."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            group_path = Path(tmpdir) / "myapp/admin.rego"
+            group_path.parent.mkdir(parents=True, exist_ok=True)
+            group_path.write_text("package myapp.admin\n")
+
+            config.policy_groups = [
+                PolicyGroup(url_pattern=r"^/nonexistent$", policy_path="myapp.admin")
+            ]
+
+            diff = policy_diff(sample_app, config, tmpdir)
+
+            assert "myapp.admin" not in diff.orphaned
+
+
+class TestNormalizerRoundTrip:
+    """Regression (B3+B4): generate then diff with a normalizer must be clean."""
+
+    def test_generate_then_diff_with_normalizer(self):
+        app = FastAPI()
+
+        @app.get("/aircraft-programs")
+        def list_programs():
+            return []
+
+        @app.get("/aircraft-programs/{program_id}")
+        def get_program(program_id: int):
+            return {}
+
+        config = TopazConfig(
+            authorizer_options=AuthorizerOptions(url="localhost:8282"),
+            policy_path_root="myapp",
+            identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_SUB, value="user"),
+            policy_instance_name="test",
+            policy_path_normalizer=normalize_hyphens,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            policies = generate_policies(app, config, output_dir=tmpdir)
+            assert "myapp.GET.aircraft_programs" in policies
+
+            diff = policy_diff(app, config, tmpdir)
+
+            assert diff.missing == []
+            assert diff.orphaned == []
 
 
 class TestGenerateRightsMatrix:

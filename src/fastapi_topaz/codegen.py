@@ -290,6 +290,11 @@ def policy_diff(
     )
     route_policies = {r["policy_path"] for r in routes}
     route_policies.add(f"{config.policy_path_root}.check")  # ReBAC policy
+    # Resolution-chain policies are referenced by config, not routes — not orphans
+    if config.default_policy:
+        route_policies.add(config.default_policy)
+    for group in config.policy_groups:
+        route_policies.add(group.policy_path)
 
     existing_policies = scan_policy_files(policies_dir)
 
