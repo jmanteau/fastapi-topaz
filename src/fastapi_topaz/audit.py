@@ -230,6 +230,7 @@ class AuditLogger:
         subject_type: str | None = None,
         resource_context: dict[str, Any] | None = None,
         policy_resolution_source: str | None = None,
+        reason: str | None = None,
     ) -> None:
         """Log an authorization decision."""
         if allowed and not self.log_allowed:
@@ -262,6 +263,7 @@ class AuditLogger:
             subject_type=subject_type,
             resource_context=resource_context if self.include_resource_context else None,
             policy_resolution_source=policy_resolution_source,
+            reason=reason,
         )
 
         await self._emit(event)

@@ -906,3 +906,93 @@ class TestConfigValidation:
                 policy_instance_name="test",
                 default_policy="",
             )
+
+
+class TestOnErrorOption:
+    """Middleware on_error behavior when the authorizer check fails (C3 fix)."""
+
+    def _failing_app(self, topaz_config, monkeypatch, **middleware_kwargs):
+        monkeypatch.setattr(
+            SharedAuthorizerClient,
+            "decisions",
+            AsyncMock(side_effect=ConnectionError("authorizer unreachable")),
+        )
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config, **middleware_kwargs)
+
+        @app.get("/test")
+        def route():
+            return {"status": "ok"}
+
+        return app
+
+    def test_default_deny_returns_403(self, topaz_config, monkeypatch):
+        app = self._failing_app(topaz_config, monkeypatch)
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/test")
+        assert response.status_code == 403
+
+    def test_unavailable_returns_503(self, topaz_config, monkeypatch):
+        app = self._failing_app(topaz_config, monkeypatch, on_error="unavailable")
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/test")
+        assert response.status_code == 503
+        assert response.json() == {"detail": "Authorization service unavailable"}
+
+    def test_error_audited_with_reason(self, authorizer_options, identity_provider, monkeypatch):
+        """Infrastructure errors emit an audit event with reason=authorizer_error."""
+        monkeypatch.setattr(
+            SharedAuthorizerClient,
+            "decisions",
+            AsyncMock(side_effect=ConnectionError("down")),
+        )
+
+        captured: list = []
+
+        async def handler(event):
+            captured.append(event)
+
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            audit_logger=AuditLogger(handler=handler),
+        )
+
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=config)
+
+        @app.get("/test")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/test")
+        assert response.status_code == 403
+        assert len(captured) == 1
+        assert captured[0].reason == "authorizer_error"
+        assert captured[0].decision == "denied"
+
+    def test_identity_provider_exception_logged(self, topaz_config, patch_client, caplog):
+        """Identity provider exceptions are logged, request still gets 401."""
+        import logging
+
+        def raising_provider(req):
+            raise RuntimeError("token decode failed")
+
+        topaz_config.identity_provider = raising_provider
+
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/test")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app, raise_server_exceptions=False)
+        with caplog.at_level(logging.ERROR, logger="fastapi_topaz.middleware"):
+            response = client.get("/test")
+
+        assert response.status_code == 401
+        assert any("identity_provider raised" in r.message for r in caplog.records)

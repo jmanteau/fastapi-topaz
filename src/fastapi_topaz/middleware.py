@@ -98,6 +98,10 @@ class TopazMiddleware:
             - "deny": Return 401 Unauthorized
             - "anonymous": Pass anonymous identity to Topaz (let policy decide)
         on_denied: Optional callback to customize 403 response
+        on_error: How to respond when the authorization check itself fails
+            (e.g. authorizer unreachable) and no circuit breaker fallback applies:
+            - "deny": Return 403 Forbidden (fail-closed default)
+            - "unavailable": Return 503 Service Unavailable
         policies_dir: Optional directory to scan for explicit ``.rego`` policy files
             at startup.  When provided, the middleware builds a set of known policy
             paths and uses the resolution chain to decide which policy to evaluate
@@ -112,6 +116,7 @@ class TopazMiddleware:
         exclude_methods: list[str] | None = None,
         on_missing_identity: Literal["deny", "anonymous"] = "deny",
         on_denied: Callable[[Request, str], Response] | None = None,
+        on_error: Literal["deny", "unavailable"] = "deny",
         policies_dir: str | Path | None = None,
     ) -> None:
         self.app = app
@@ -120,6 +125,7 @@ class TopazMiddleware:
         self.exclude_methods = set(exclude_methods or ["OPTIONS", "HEAD"])
         self.on_missing_identity = on_missing_identity
         self.on_denied = on_denied
+        self.on_error = on_error
 
         # --- Resolution chain setup ---
         # Scan explicit policy files
@@ -269,6 +275,7 @@ class TopazMiddleware:
         try:
             identity = self.config.identity_provider(request)
         except Exception:
+            logger.exception("identity_provider raised for %s %s", method, path)
             identity = None
 
         # Handle missing identity
@@ -288,15 +295,42 @@ class TopazMiddleware:
         resource_context.update(path_params)
 
         # Check authorization
+        check_error: Exception | None = None
         try:
             allowed = await self.config.check_decision(
                 request, policy_path, "allowed", resource_context or None
             )
         except Exception as e:
-            logger.error(f"Authorization check failed in middleware: {type(e).__name__}: {e}")
+            logger.exception(
+                "Authorization check failed in middleware for policy %s", policy_path
+            )
+            check_error = e
             allowed = False
 
         latency_ms = (time.monotonic() - start_time) * 1000
+
+        if check_error is not None:
+            if self.config.audit_logger:
+                await self.config.audit_logger.log_decision(
+                    request=request, policy_path=policy_path, allowed=False,
+                    source="middleware",
+                    identity_type=identity.type.name if hasattr(identity.type, "name") else str(identity.type),  # type: ignore[union-attr]
+                    identity_value=identity.value, latency_ms=latency_ms,
+                    resource_context=resource_context or None,
+                    policy_resolution_source=resolution_source,
+                    reason="authorizer_error",
+                )
+            if self.on_error == "unavailable":
+                response = JSONResponse(
+                    status_code=503,
+                    content={"detail": "Authorization service unavailable"},
+                )
+            elif self.on_denied:
+                response = self.on_denied(request, policy_path)
+            else:
+                response = JSONResponse(status_code=403, content={"detail": "Forbidden"})
+            await response(scope, receive, send)
+            return
 
         # Audit logging
         if self.config.audit_logger:
