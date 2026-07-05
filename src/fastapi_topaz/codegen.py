@@ -3,13 +3,14 @@ Policy generation and validation utilities.
 
 Generate Rego policy skeletons from FastAPI routes and validate policies at startup.
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
 
@@ -123,24 +124,28 @@ def _generate_policy_rego(
         lines.append("")
 
     if is_rebac and template.include_ds_check:
-        lines.extend([
-            "allowed if {",
-            "    ds.check({",
-            '        "object_type": input.resource.object_type,',
-            '        "object_id": input.resource.object_id,',
-            '        "relation": input.resource.relation,',
-            '        "subject_type": input.resource.subject_type,',
-            '        "subject_id": input.identity.value,',
-            "    })",
-            "}",
-        ])
+        lines.extend(
+            [
+                "allowed if {",
+                "    ds.check({",
+                '        "object_type": input.resource.object_type,',
+                '        "object_id": input.resource.object_id,',
+                '        "relation": input.resource.relation,',
+                '        "subject_type": input.resource.subject_type,',
+                '        "subject_id": input.identity.value,',
+                "    })",
+                "}",
+            ]
+        )
     else:
-        lines.extend([
-            "allowed if {",
-            "    # TODO: Implement authorization logic",
-            '    input.identity.type == "IDENTITY_TYPE_SUB"',
-            "}",
-        ])
+        lines.extend(
+            [
+                "allowed if {",
+                "    # TODO: Implement authorization logic",
+                '    input.identity.type == "IDENTITY_TYPE_SUB"',
+                "}",
+            ]
+        )
 
     return "\n".join(lines) + "\n"
 
@@ -157,6 +162,7 @@ def scan_routes(
     app: FastAPI,
     policy_root: str,
     exclude_paths: set[str] | None = None,
+    policy_path_normalizer: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Scan FastAPI app routes and extract policy information.
@@ -165,6 +171,8 @@ def scan_routes(
         app: FastAPI application instance
         policy_root: Policy path root
         exclude_paths: Paths to exclude (defaults to docs routes)
+        policy_path_normalizer: Optional callable applied to generated policy
+            paths (must match the runtime config to avoid drift)
 
     Returns list of route info dicts with policy_path, method, path, etc.
     """
@@ -185,14 +193,16 @@ def scan_routes(
             if method in ("HEAD", "OPTIONS"):
                 continue
 
-            policy_path = _resolve_policy_path(policy_root, method, path)
-            routes.append({
-                "policy_path": policy_path,
-                "method": method,
-                "path": path,
-                "route_pattern": path,
-                "auth_type": "policy",  # Default, could be detected from dependencies
-            })
+            policy_path = _resolve_policy_path(policy_root, method, path, policy_path_normalizer)
+            routes.append(
+                {
+                    "policy_path": policy_path,
+                    "method": method,
+                    "path": path,
+                    "route_pattern": path,
+                    "auth_type": "policy",  # Default, could be detected from dependencies
+                }
+            )
 
     return routes
 
@@ -216,7 +226,11 @@ def generate_policies(
         Dict mapping policy paths to Rego content
     """
     template = template or PolicyTemplate()
-    routes = scan_routes(app, config.policy_path_root)
+    routes = scan_routes(
+        app,
+        config.policy_path_root,
+        policy_path_normalizer=config.policy_path_normalizer,
+    )
     policies: dict[str, str] = {}
 
     for route_info in routes:
@@ -269,7 +283,11 @@ def policy_diff(
         PolicyDiff with missing, orphaned, valid, group_covered, and
         default_covered policies
     """
-    routes = scan_routes(app, config.policy_path_root)
+    routes = scan_routes(
+        app,
+        config.policy_path_root,
+        policy_path_normalizer=config.policy_path_normalizer,
+    )
     route_policies = {r["policy_path"] for r in routes}
     route_policies.add(f"{config.policy_path_root}.check")  # ReBAC policy
 
@@ -375,7 +393,11 @@ def generate_rights_matrix(
     Returns:
         List of RouteResolution entries for every discovered route.
     """
-    routes = scan_routes(app, config.policy_path_root)
+    routes = scan_routes(
+        app,
+        config.policy_path_root,
+        policy_path_normalizer=config.policy_path_normalizer,
+    )
     existing: set[str] = scan_policy_files(policies_dir) if policies_dir else set()
 
     compiled_groups = _compile_policy_groups(config.policy_groups)
@@ -401,19 +423,23 @@ def generate_rights_matrix(
             if source == "generated" and config.default_policy:
                 resolved, source = config.default_policy, "default"
 
-        results.append(RouteResolution(
-            method=route_info["method"],
-            route_pattern=route_info["path"],
-            specific_policy_path=specific,
-            resolved_policy_path=resolved,
-            resolution_source=source,
-            matched_group_pattern=matched_pattern,
-            policy_file_exists=resolved in existing,
-        ))
+        results.append(
+            RouteResolution(
+                method=route_info["method"],
+                route_pattern=route_info["path"],
+                specific_policy_path=specific,
+                resolved_policy_path=resolved,
+                resolution_source=source,
+                matched_group_pattern=matched_pattern,
+                policy_file_exists=resolved in existing,
+            )
+        )
 
     if output_file:
         _write_rights_matrix_markdown(
-            results, config.policy_path_root, Path(output_file),
+            results,
+            config.policy_path_root,
+            Path(output_file),
         )
 
     return results

@@ -20,7 +20,7 @@ import pytest
 from aserto.client import AuthorizerOptions, Identity, IdentityType
 from fastapi import FastAPI
 
-from fastapi_topaz import PolicyGroup, TopazConfig
+from fastapi_topaz import PolicyGroup, TopazConfig, normalize_hyphens
 from fastapi_topaz.codegen import (
     PolicyTemplate,
     generate_policies,
@@ -86,6 +86,20 @@ class TestScanRoutes:
         assert "myapp.GET.documents.__id" in paths
         assert "myapp.PUT.documents.__id" in paths
         assert "myapp.DELETE.documents.__id" in paths
+
+    def test_applies_policy_path_normalizer(self, config):
+        """Regression (B3): scan_routes must apply the same normalizer as the runtime."""
+        app = FastAPI()
+
+        @app.get("/aircraft-programs")
+        def list_programs():
+            return []
+
+        routes = scan_routes(app, config.policy_path_root, policy_path_normalizer=normalize_hyphens)
+        paths = {r["policy_path"] for r in routes}
+
+        assert "myapp.GET.aircraft_programs" in paths
+        assert "myapp.GET.aircraft-programs" not in paths
 
 
 class TestGeneratePolicies:
