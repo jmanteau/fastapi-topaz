@@ -14,6 +14,7 @@ Test organization:
 - TestOnDenied: Custom denial response handlers
 - TestMiddlewareWithCache: Decision caching integration
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
@@ -23,8 +24,6 @@ from aserto.client import AuthorizerOptions, Identity, IdentityType
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse
-
-import pytest
 
 from fastapi_topaz import (
     AuditLogger,
@@ -326,7 +325,9 @@ class TestOnMissingIdentity:
         config = TopazConfig(
             authorizer_options=authorizer_options,
             policy_path_root="testapp",
-            identity_provider=lambda req: Identity(type=IdentityType.IDENTITY_TYPE_NONE, value="anonymous"),
+            identity_provider=lambda req: Identity(
+                type=IdentityType.IDENTITY_TYPE_NONE, value="anonymous"
+            ),
             policy_instance_name="test",
         )
 
@@ -476,7 +477,9 @@ class TestPolicyPathNormalizer:
     should apply it when generating policy paths from routes.
     """
 
-    def test_normalizer_applied_to_policy_path(self, authorizer_options, identity_provider, monkeypatch):
+    def test_normalizer_applied_to_policy_path(
+        self, authorizer_options, identity_provider, monkeypatch
+    ):
         """Middleware should pass normalizer through to _resolve_policy_path."""
         mock_client = Mock()
         mock_client.decisions = AsyncMock(return_value={"allowed": True})
@@ -670,7 +673,7 @@ class TestResolutionChainValidation:
 
         # Validation happens when middleware is instantiated
         try:
-            middleware = TopazMiddleware(
+            TopazMiddleware(
                 app=app,
                 config=topaz_config,
             )
@@ -683,8 +686,8 @@ class TestResolutionChainValidation:
         self, topaz_config, patch_client, caplog, monkeypatch
     ):
         """Warning logged when default_policy file doesn't exist."""
-        import tempfile
         import logging
+        import tempfile
 
         logging.getLogger("fastapi_topaz").setLevel(logging.WARNING)
 
@@ -706,17 +709,20 @@ class TestResolutionChainValidation:
             client.get("/test")
 
             # Check warning was logged
-            assert any(
-                "default_policy" in record.message and "not found" in record.message.lower()
-                for record in caplog.records
-            ) or len(caplog.records) > 0
+            assert (
+                any(
+                    "default_policy" in record.message and "not found" in record.message.lower()
+                    for record in caplog.records
+                )
+                or len(caplog.records) > 0
+            )
 
     def test_startup_warns_missing_group_policy_file(
         self, topaz_config, patch_client, caplog, monkeypatch
     ):
         """Warning logged when group policy file doesn't exist."""
-        import tempfile
         import logging
+        import tempfile
 
         logging.getLogger("fastapi_topaz").setLevel(logging.WARNING)
 
@@ -742,10 +748,13 @@ class TestResolutionChainValidation:
             client.get("/admin/users")
 
             # Check warning was logged
-            assert any(
-                "policy_groups" in record.message and "not found" in record.message.lower()
-                for record in caplog.records
-            ) or len(caplog.records) > 0
+            assert (
+                any(
+                    "policy_groups" in record.message and "not found" in record.message.lower()
+                    for record in caplog.records
+                )
+                or len(caplog.records) > 0
+            )
 
 
 class TestResolutionChainBackwardCompat:

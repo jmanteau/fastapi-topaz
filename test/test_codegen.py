@@ -10,6 +10,7 @@ Test organization:
 - TestGeneratePolicies: Rego policy file generation
 - TestPolicyDiff: Comparing routes against existing policies
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -25,7 +26,6 @@ from fastapi_topaz.codegen import (
     generate_policies,
     generate_rights_matrix,
     policy_diff,
-    RouteResolution,
     scan_routes,
 )
 
@@ -64,9 +64,7 @@ def config():
     return TopazConfig(
         authorizer_options=AuthorizerOptions(url="localhost:8282"),
         policy_path_root="myapp",
-        identity_provider=lambda r: Identity(
-            type=IdentityType.IDENTITY_TYPE_SUB, value="user"
-        ),
+        identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_SUB, value="user"),
         policy_instance_name="test",
     )
 
@@ -285,7 +283,7 @@ class TestGenerateRightsMatrix:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_file = Path(tmpdir) / "matrix.md"
 
-            results = generate_rights_matrix(
+            generate_rights_matrix(
                 sample_app,
                 config,
                 policies_dir=None,
