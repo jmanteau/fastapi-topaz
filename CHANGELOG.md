@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Middleware authorization checks are now attributed to `source="middleware"` in metrics, cache counters, and tracing spans, matching the audit log; previously they were mislabeled as `source="dependency"`
 - `scan_routes` (and therefore `generate-policies`, `policy-diff`, and `generate-rights-matrix`) now applies the configured `policy_path_normalizer`, so generated policies match what the runtime evaluates instead of drifting on e.g. hyphenated paths
 - `policy_diff` no longer reports `default_policy` and `PolicyGroup` policy files as orphaned, so a correctly configured resolution chain passes `policy-diff --strict`
+- `TopazConfig` and `ConnectionPool` now create their asyncio primitives lazily on first use instead of at construction, fixing "attached to a different loop" errors on Python 3.9 when the config is created at module import time
 
 ### Added
 
