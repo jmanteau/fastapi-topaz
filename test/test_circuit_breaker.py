@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, Mock
 
+import grpc
 import pytest
 from aserto.client import AuthorizerOptions, Identity, IdentityType
 from fastapi import Depends, FastAPI, Request
@@ -374,3 +375,104 @@ class TestCircuitBreakerIntegration:
             # Second call fails but uses stale cache
             resp = await client.get("/test")
             assert resp.status_code == 200  # Stale cache hit
+
+
+class _FakeRpcError(grpc.RpcError):
+    """Mimics grpc.aio.AioRpcError: an RpcError exposing code()."""
+
+    def __init__(self, code):
+        self._code = code
+        super().__init__()
+
+    def code(self):
+        return self._code
+
+
+class TestGrpcFailureDetection:
+    """gRPC errors must trip the breaker based on status code (C1 fix)."""
+
+    def test_unavailable_is_failure(self, circuit_breaker):
+        exc = _FakeRpcError(grpc.StatusCode.UNAVAILABLE)
+        assert circuit_breaker.is_failure_exception(exc) is True
+
+    def test_deadline_exceeded_is_failure(self, circuit_breaker):
+        exc = _FakeRpcError(grpc.StatusCode.DEADLINE_EXCEEDED)
+        assert circuit_breaker.is_failure_exception(exc) is True
+
+    def test_invalid_argument_is_not_failure(self, circuit_breaker):
+        """Policy errors must NOT trip the breaker."""
+        exc = _FakeRpcError(grpc.StatusCode.INVALID_ARGUMENT)
+        assert circuit_breaker.is_failure_exception(exc) is False
+
+    def test_not_found_is_not_failure(self, circuit_breaker):
+        exc = _FakeRpcError(grpc.StatusCode.NOT_FOUND)
+        assert circuit_breaker.is_failure_exception(exc) is False
+
+    def test_plain_exceptions_still_use_failure_exceptions(self, circuit_breaker):
+        assert circuit_breaker.is_failure_exception(ConnectionError("down")) is True
+        assert circuit_breaker.is_failure_exception(ValueError("nope")) is False
+
+    async def test_breaker_opens_on_grpc_unavailable(
+        self, authorizer_options, identity_provider, monkeypatch
+    ):
+        """Repeated UNAVAILABLE errors from the authorizer open the circuit."""
+        cb = CircuitBreaker(failure_threshold=2, fallback="deny")
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="test",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            circuit_breaker=cb,
+        )
+
+        monkeypatch.setattr(
+            SharedAuthorizerClient,
+            "decisions",
+            AsyncMock(side_effect=_FakeRpcError(grpc.StatusCode.UNAVAILABLE)),
+        )
+
+        app = FastAPI()
+
+        @app.get("/test")
+        async def route(request: Request, _=Depends(require_policy_allowed(config, "test"))):
+            return {"ok": True}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get("/test")
+            await client.get("/test")
+            assert cb.state == CircuitState.OPEN
+
+    async def test_invalid_argument_does_not_open_breaker(
+        self, authorizer_options, identity_provider, monkeypatch
+    ):
+        """Policy errors propagate without tripping the breaker."""
+        cb = CircuitBreaker(failure_threshold=2, fallback="deny")
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="test",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            circuit_breaker=cb,
+        )
+
+        monkeypatch.setattr(
+            SharedAuthorizerClient,
+            "decisions",
+            AsyncMock(side_effect=_FakeRpcError(grpc.StatusCode.INVALID_ARGUMENT)),
+        )
+
+        app = FastAPI()
+
+        @app.get("/test")
+        async def route(request: Request, _=Depends(require_policy_allowed(config, "test"))):
+            return {"ok": True}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for _ in range(3):
+                with pytest.raises(_FakeRpcError):
+                    await client.get("/test")
+            assert cb.state == CircuitState.CLOSED

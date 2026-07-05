@@ -4,6 +4,7 @@ Circuit Breaker pattern for graceful degradation when Topaz is unavailable.
 Provides resilience by detecting failures and preventing cascading failures.
 Integrates with DecisionCache to serve stale cached decisions during outages.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, TypeVar, Union
 
+import grpc
 from fastapi import Request
 
 logger = logging.getLogger("fastapi_topaz.circuit_breaker")
@@ -71,6 +73,8 @@ class CircuitBreaker:
         serve_stale_cache: Whether to serve expired cache entries when open
         stale_cache_ttl: Maximum age (seconds) of stale cache to serve
         failure_exceptions: Exception types that count as failures
+        failure_grpc_codes: gRPC status codes that count as failures (default:
+            UNAVAILABLE, DEADLINE_EXCEEDED, UNKNOWN, INTERNAL, RESOURCE_EXHAUSTED)
         timeout_ms: Consider timeout after this many milliseconds
         on_state_change: Callback when circuit state changes
         on_fallback: Callback when fallback is used
@@ -106,6 +110,15 @@ class CircuitBreaker:
     # Failure detection
     failure_exceptions: list[type] = field(
         default_factory=lambda: [ConnectionError, TimeoutError, OSError]
+    )
+    failure_grpc_codes: set = field(
+        default_factory=lambda: {
+            grpc.StatusCode.UNAVAILABLE,
+            grpc.StatusCode.DEADLINE_EXCEEDED,
+            grpc.StatusCode.UNKNOWN,
+            grpc.StatusCode.INTERNAL,
+            grpc.StatusCode.RESOURCE_EXHAUSTED,
+        }
     )
     timeout_ms: int = 5000
 
@@ -189,15 +202,11 @@ class CircuitBreaker:
             self._failure_count += 1
             self._success_count = 0
 
-            logger.warning(
-                f"Circuit breaker recorded failure #{self._failure_count}: {exception}"
-            )
+            logger.warning(f"Circuit breaker recorded failure #{self._failure_count}: {exception}")
 
             if self._state == CircuitState.CLOSED:
                 if self._failure_count >= self.failure_threshold:
-                    await self._transition_to(
-                        CircuitState.OPEN, "failure_threshold_exceeded"
-                    )
+                    await self._transition_to(CircuitState.OPEN, "failure_threshold_exceeded")
             elif self._state == CircuitState.HALF_OPEN:
                 await self._transition_to(CircuitState.OPEN, "test_failed")
 
@@ -234,7 +243,17 @@ class CircuitBreaker:
             return False
 
     def is_failure_exception(self, exc: Exception) -> bool:
-        """Check if an exception should count as a circuit breaker failure."""
+        """Check if an exception should count as a circuit breaker failure.
+
+        gRPC errors (including grpc.aio.AioRpcError) count as failures only
+        when their status code is in failure_grpc_codes, so policy errors
+        like INVALID_ARGUMENT or NOT_FOUND do not trip the breaker.
+        """
+        if isinstance(exc, grpc.RpcError):
+            try:
+                return exc.code() in self.failure_grpc_codes
+            except Exception:
+                return True
         return any(isinstance(exc, exc_type) for exc_type in self.failure_exceptions)
 
     async def get_fallback_decision(
@@ -268,9 +287,7 @@ class CircuitBreaker:
                     break
 
         if callable(self.fallback):
-            result = self.fallback(
-                request, policy_path, resource_context, cached_decision, error
-            )
+            result = self.fallback(request, policy_path, resource_context, cached_decision, error)
             # Support both sync and async callables
             if asyncio.iscoroutine(result):
                 result = await result  # type: ignore[misc]
