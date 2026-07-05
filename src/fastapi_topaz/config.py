@@ -330,18 +330,23 @@ class TopazConfig:
         decision: str,
         resource_context: ResourceContext | None = None,
         source: str = "dependency",
+        policy_resolution_source: str | None = None,
     ) -> bool:
         """
         Check an authorization decision, using cache if available.
 
         This is the core authorization check method that handles caching,
         circuit breaker logic, and can be used directly for custom authorization logic.
+
+        When ``audit_logger`` is configured, every call emits exactly one audit
+        event, regardless of caller (middleware, dependency, or manual API).
         """
         identity = self.identity_provider(request)
         start_time = time.monotonic()
         cached_result = False
         result: bool = False
         span = None
+        check_error: Exception | None = None
 
         # Start tracing span
         if self.tracing:
@@ -443,6 +448,7 @@ class TopazConfig:
             return result
 
         except Exception as e:
+            check_error = e
             if self.metrics:
                 self.metrics.record_error(type(e).__name__)
             if self.tracing and span:
@@ -482,6 +488,8 @@ class TopazConfig:
                     except Exception as cb_error:
                         logger.error(f"Error in on_fallback callback: {cb_error}")
 
+                # Fallback produced a decision — not a propagating error
+                check_error = None
                 return result
 
             # Not a circuit breaker failure, re-raise
@@ -512,6 +520,38 @@ class TopazConfig:
                     resource_context=dict(resource_context) if resource_context else None,
                 )
 
+            # Audit logging — single emission point for all sources
+            if self.audit_logger:
+                ctx = dict(resource_context) if resource_context else None
+                is_rebac = bool(ctx and ctx.get("object_type") and ctx.get("relation"))
+
+                def _ctx_str(key: str) -> str | None:
+                    if not is_rebac or not ctx:
+                        return None
+                    value = ctx.get(key)
+                    return str(value) if value is not None else None
+
+                await self.audit_logger.log_decision(
+                    request=request,
+                    policy_path=policy_path,
+                    allowed=result,
+                    source=source,
+                    check_type="rebac" if is_rebac else "policy",
+                    cached=cached_result,
+                    latency_ms=latency_ms,
+                    identity_type=identity.type.name  # type: ignore[union-attr]
+                    if hasattr(identity.type, "name")
+                    else str(identity.type),
+                    identity_value=identity.value,
+                    object_type=_ctx_str("object_type"),
+                    object_id=_ctx_str("object_id"),
+                    relation=_ctx_str("relation"),
+                    subject_type=_ctx_str("subject_type"),
+                    resource_context=ctx,
+                    policy_resolution_source=policy_resolution_source,
+                    reason="authorizer_error" if check_error is not None else None,
+                )
+
     def policy_path_for(self, method: str, route_path: str) -> str:
         """
         Generate the policy path for a given HTTP method and route path.
@@ -540,6 +580,7 @@ class TopazConfig:
         policy_path: str,
         resource_context: ResourceContext | None = None,
         decision: str = "allowed",
+        source: str = "manual",
     ) -> bool:
         """
         Check if an action is allowed without raising an exception.
@@ -577,7 +618,7 @@ class TopazConfig:
         if request.path_params:
             ctx.update(request.path_params)
 
-        return await self.check_decision(request, policy_path, decision, ctx)
+        return await self.check_decision(request, policy_path, decision, ctx, source=source)
 
     async def check_relation(
         self,
@@ -586,6 +627,7 @@ class TopazConfig:
         object_id: str,
         relation: str,
         subject_type: str = "user",
+        source: str = "manual",
     ) -> bool:
         """
         Check a ReBAC relation without raising an exception.
@@ -632,7 +674,9 @@ class TopazConfig:
         )
 
         policy_path = f"{self.policy_path_root}.check"
-        return await self.check_decision(request, policy_path, "allowed", resource_ctx)
+        return await self.check_decision(
+            request, policy_path, "allowed", resource_ctx, source=source
+        )
 
     async def check_relations(
         self,
@@ -641,6 +685,7 @@ class TopazConfig:
         object_id: str,
         relations: list[str],
         subject_type: str = "user",
+        source: str = "manual",
     ) -> dict[str, bool]:
         """
         Check multiple ReBAC relations at once without raising exceptions.
@@ -684,6 +729,7 @@ class TopazConfig:
                     object_id=object_id,
                     relation=rel,
                     subject_type=subject_type,
+                    source=source,
                 )
             return rel, result
 
@@ -697,6 +743,7 @@ class TopazConfig:
         mode: Literal["all", "any", "first_match"] = "all",
         subject_type: str = "user",
         optimize: bool = True,
+        source: str = "manual",
     ) -> HierarchyResult:
         """
         Check multiple ReBAC relations for hierarchical resources.
@@ -732,10 +779,12 @@ class TopazConfig:
         """
         # For first_match, order matters - run sequentially
         if mode == "first_match" or not optimize:
-            return await self._check_hierarchy_sequential(request, checks, mode, subject_type)
+            return await self._check_hierarchy_sequential(
+                request, checks, mode, subject_type, source
+            )
 
         # For "all" and "any" modes with optimize=True, run concurrently
-        return await self._check_hierarchy_concurrent(request, checks, mode, subject_type)
+        return await self._check_hierarchy_concurrent(request, checks, mode, subject_type, source)
 
     async def _check_hierarchy_sequential(
         self,
@@ -743,6 +792,7 @@ class TopazConfig:
         checks: list[tuple[str, str, str]],
         mode: Literal["all", "any", "first_match"],
         subject_type: str,
+        source: str = "manual",
     ) -> HierarchyResult:
         """Sequential check with short-circuit based on mode."""
         results: list[tuple[str, str, str, bool]] = []
@@ -750,7 +800,7 @@ class TopazConfig:
         for object_type, id_source, relation in checks:
             object_id = _resolve_id_source(id_source, request)
             allowed = await self.check_relation(
-                request, object_type, object_id, relation, subject_type
+                request, object_type, object_id, relation, subject_type, source=source
             )
             results.append((object_type, object_id, relation, allowed))
 
@@ -774,6 +824,7 @@ class TopazConfig:
         checks: list[tuple[str, str, str]],
         mode: Literal["all", "any"],
         subject_type: str,
+        source: str = "manual",
     ) -> HierarchyResult:
         """Concurrent check for all/any modes."""
 
@@ -784,7 +835,7 @@ class TopazConfig:
             object_id = _resolve_id_source(id_source, request)
             async with self._get_semaphore():
                 allowed = await self.check_relation(
-                    request, object_type, object_id, relation, subject_type
+                    request, object_type, object_id, relation, subject_type, source=source
                 )
             return object_type, object_id, relation, allowed
 

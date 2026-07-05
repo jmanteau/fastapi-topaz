@@ -9,6 +9,7 @@ Test organization:
 - TestAuditEvent: Event data structure and serialization
 - TestAuditLogger: Logging behavior, filtering, and handlers
 """
+
 from __future__ import annotations
 
 import json
@@ -96,6 +97,7 @@ class TestAuditLogger:
     @pytest.mark.asyncio
     async def test_log_decision_allowed(self):
         events = []
+
         async def capture(e):
             events.append(e)
 
@@ -109,6 +111,7 @@ class TestAuditLogger:
     @pytest.mark.asyncio
     async def test_log_decision_denied(self):
         events = []
+
         async def capture(e):
             events.append(e)
 
@@ -122,6 +125,7 @@ class TestAuditLogger:
     @pytest.mark.asyncio
     async def test_log_allowed_disabled(self):
         events = []
+
         async def capture(e):
             events.append(e)
 
@@ -133,6 +137,7 @@ class TestAuditLogger:
     @pytest.mark.asyncio
     async def test_log_denied_disabled(self):
         events = []
+
         async def capture(e):
             events.append(e)
 
@@ -144,6 +149,7 @@ class TestAuditLogger:
     @pytest.mark.asyncio
     async def test_log_with_request(self):
         events = []
+
         async def capture(e):
             events.append(e)
 
@@ -166,6 +172,7 @@ class TestAuditLogger:
     @pytest.mark.asyncio
     async def test_log_batch_check(self):
         events = []
+
         async def capture(e):
             events.append(e)
 
@@ -184,19 +191,19 @@ class TestAuditLogger:
     @pytest.mark.asyncio
     async def test_log_batch_check_disabled(self):
         events = []
+
         async def capture(e):
             events.append(e)
 
         logger = AuditLogger(handler=capture, log_manual_checks=False)
-        await logger.log_batch_check(
-            None, "document", "doc-123", {"can_read": True}
-        )
+        await logger.log_batch_check(None, "document", "doc-123", {"can_read": True})
 
         assert len(events) == 0
 
     @pytest.mark.asyncio
     async def test_log_unauthenticated_event(self):
         events = []
+
         async def capture(e):
             events.append(e)
 
@@ -211,6 +218,7 @@ class TestAuditLogger:
     @pytest.mark.asyncio
     async def test_request_id_from_header(self):
         events = []
+
         async def capture(e):
             events.append(e)
 
@@ -230,6 +238,7 @@ class TestAuditLogger:
     async def test_sync_handler(self):
         """Test that sync handlers work too."""
         events = []
+
         def capture(e):
             events.append(e)
 
@@ -237,3 +246,109 @@ class TestAuditLogger:
         await logger.log_decision(None, "test", True)
 
         assert len(events) == 1
+
+    @pytest.mark.asyncio
+    async def test_manual_source_gated_by_log_manual_checks(self):
+        """source='manual' events are dropped unless log_manual_checks is set."""
+        events = []
+
+        def capture(e):
+            events.append(e)
+
+        logger = AuditLogger(handler=capture, log_manual_checks=False)
+        await logger.log_decision(None, "test", True, source="manual")
+        assert len(events) == 0
+
+        logger = AuditLogger(handler=capture, log_manual_checks=True)
+        await logger.log_decision(None, "test", True, source="manual")
+        assert len(events) == 1
+        assert events[0].source == "manual"
+
+
+class TestAuditFromCheckDecision:
+    """D4: check_decision emits audit events for every caller, not just middleware."""
+
+    def _make_config(self, audit_logger, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from aserto.client import AuthorizerOptions, Identity, IdentityType
+
+        from fastapi_topaz import TopazConfig
+        from fastapi_topaz._client import SharedAuthorizerClient
+
+        monkeypatch.setattr(
+            SharedAuthorizerClient, "decisions", AsyncMock(return_value={"allowed": True})
+        )
+        return TopazConfig(
+            authorizer_options=AuthorizerOptions(url="localhost:8282"),
+            policy_path_root="testapp",
+            identity_provider=lambda r: Identity(
+                type=IdentityType.IDENTITY_TYPE_SUB, value="user-1"
+            ),
+            policy_instance_name="test",
+            audit_logger=audit_logger,
+        )
+
+    def _make_request(self):
+        from fastapi import Request
+
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/docs/1",
+                "path_params": {},
+                "headers": [],
+                "query_string": b"",
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_dependency_source_emits_event(self, monkeypatch):
+        events = []
+        config = self._make_config(AuditLogger(handler=events.append), monkeypatch)
+
+        await config.check_decision(self._make_request(), "testapp.GET.docs", "allowed")
+
+        assert len(events) == 1
+        assert events[0].source == "dependency"
+        assert events[0].decision == "allowed"
+        assert events[0].identity_value == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_is_allowed_silent_by_default(self, monkeypatch):
+        events = []
+        config = self._make_config(AuditLogger(handler=events.append), monkeypatch)
+
+        await config.is_allowed(self._make_request(), "testapp.GET.docs")
+
+        assert len(events) == 0
+
+    @pytest.mark.asyncio
+    async def test_is_allowed_emits_manual_with_log_manual_checks(self, monkeypatch):
+        events = []
+        config = self._make_config(
+            AuditLogger(handler=events.append, log_manual_checks=True), monkeypatch
+        )
+
+        await config.is_allowed(self._make_request(), "testapp.GET.docs")
+
+        assert len(events) == 1
+        assert events[0].source == "manual"
+
+    @pytest.mark.asyncio
+    async def test_rebac_event_carries_object_fields(self, monkeypatch):
+        events = []
+        config = self._make_config(
+            AuditLogger(handler=events.append, log_manual_checks=True), monkeypatch
+        )
+
+        await config.check_relation(
+            self._make_request(), object_type="document", object_id="doc-1", relation="can_read"
+        )
+
+        assert len(events) == 1
+        assert events[0].check_type == "rebac"
+        assert events[0].object_type == "document"
+        assert events[0].object_id == "doc-1"
+        assert events[0].relation == "can_read"

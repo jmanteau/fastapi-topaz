@@ -3,6 +3,7 @@ Testing utilities for fastapi-topaz.
 
 Provides MockTopazConfig and helpers to test authorization without a running Topaz instance.
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -66,9 +67,7 @@ class RelationRule:
     users: list[str] | None = None
     object_ids: list[str] | None = None
 
-    def matches(
-        self, obj_type: str, rel: str, obj_id: str | None, identity: str | None
-    ) -> bool:
+    def matches(self, obj_type: str, rel: str, obj_id: str | None, identity: str | None) -> bool:
         if not fnmatch.fnmatch(obj_type, self.object_type):
             return False
         if not fnmatch.fnmatch(rel, self.relation):
@@ -191,6 +190,8 @@ class MockTopazConfig:
         policy_path: str,
         decision: str,
         resource_context: dict[str, Any] | None = None,
+        source: str = "dependency",
+        policy_resolution_source: str | None = None,
     ) -> bool:
         ctx = dict(resource_context) if resource_context else {}
         identity = self.identity_returns

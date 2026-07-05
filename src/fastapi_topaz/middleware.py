@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
@@ -283,7 +282,6 @@ class TopazMiddleware:
         request = Request(scope, receive)
 
         # Extract identity
-        start_time = time.monotonic()
         try:
             identity = self.config.identity_provider(request)
         except Exception:
@@ -308,7 +306,7 @@ class TopazMiddleware:
             resource_context.update(self.config.resource_context_provider(request))
         resource_context.update(path_params)
 
-        # Check authorization
+        # Check authorization; audit events are emitted by check_decision
         check_error: Exception | None = None
         try:
             allowed = await self.config.check_decision(
@@ -317,30 +315,14 @@ class TopazMiddleware:
                 "allowed",
                 resource_context or None,
                 source="middleware",
+                policy_resolution_source=resolution_source,
             )
         except Exception as e:
             logger.exception("Authorization check failed in middleware for policy %s", policy_path)
             check_error = e
             allowed = False
 
-        latency_ms = (time.monotonic() - start_time) * 1000
-
         if check_error is not None:
-            if self.config.audit_logger:
-                await self.config.audit_logger.log_decision(
-                    request=request,
-                    policy_path=policy_path,
-                    allowed=False,
-                    source="middleware",
-                    identity_type=identity.type.name  # type: ignore[union-attr]
-                    if hasattr(identity.type, "name")
-                    else str(identity.type),
-                    identity_value=identity.value,
-                    latency_ms=latency_ms,
-                    resource_context=resource_context or None,
-                    policy_resolution_source=resolution_source,
-                    reason="authorizer_error",
-                )
             if self.on_error == "unavailable":
                 response = JSONResponse(
                     status_code=503,
@@ -352,22 +334,6 @@ class TopazMiddleware:
                 response = JSONResponse(status_code=403, content={"detail": "Forbidden"})
             await response(scope, receive, send)
             return
-
-        # Audit logging
-        if self.config.audit_logger:
-            await self.config.audit_logger.log_decision(
-                request=request,
-                policy_path=policy_path,
-                allowed=allowed,
-                source="middleware",
-                identity_type=identity.type.name  # type: ignore[union-attr]
-                if hasattr(identity.type, "name")
-                else str(identity.type),
-                identity_value=identity.value,
-                latency_ms=latency_ms,
-                resource_context=resource_context or None,
-                policy_resolution_source=resolution_source,
-            )
 
         if not allowed:
             if self.on_denied:

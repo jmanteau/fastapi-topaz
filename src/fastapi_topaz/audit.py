@@ -3,6 +3,7 @@ Audit logging for authorization decisions.
 
 Provides structured JSON logging for compliance, security monitoring, and debugging.
 """
+
 from __future__ import annotations
 
 import json
@@ -114,12 +115,14 @@ class AuditEvent:
         # Resource block (ReBAC)
         if self.object_type or self.object_id or self.relation:
             data["resource"] = {
-                k: v for k, v in {
+                k: v
+                for k, v in {
                     "object_type": self.object_type,
                     "object_id": self.object_id,
                     "relation": self.relation,
                     "subject_type": self.subject_type,
-                }.items() if v is not None
+                }.items()
+                if v is not None
             }
 
         # Additional fields
@@ -233,6 +236,8 @@ class AuditLogger:
         reason: str | None = None,
     ) -> None:
         """Log an authorization decision."""
+        if source == "manual" and not self.log_manual_checks:
+            return
         if allowed and not self.log_allowed:
             return
         if not allowed and not self.log_denied:

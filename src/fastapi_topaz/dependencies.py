@@ -473,7 +473,9 @@ def require_rebac_hierarchy(
 
     async def dependency(request: Request) -> None:
         try:
-            result = await config.check_hierarchy(request, checks, mode, subject_type, optimize)
+            result = await config.check_hierarchy(
+                request, checks, mode, subject_type, optimize, source="dependency"
+            )
         except ValueError as e:
             logger.error(
                 "Could not resolve object ID in hierarchy check for %s %s: %s",

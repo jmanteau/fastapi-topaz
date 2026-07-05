@@ -913,6 +913,40 @@ class TestAuditResolutionSource:
         assert "policy_resolution_source" in captured_kwargs
         assert captured_kwargs["policy_resolution_source"] == "generated"
 
+    def test_middleware_emits_exactly_one_event_per_request(
+        self, authorizer_options, identity_provider, monkeypatch
+    ):
+        """D4 regression: audit emission moved into check_decision must not
+        double-log middleware requests."""
+        mock_client = Mock()
+        mock_client.decisions = AsyncMock(return_value={"allowed": True})
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock_client.decisions)
+
+        events = []
+        audit_logger = AuditLogger(handler=events.append)
+
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            audit_logger=audit_logger,
+        )
+
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=config)
+
+        @app.get("/documents")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        client.get("/documents")
+
+        assert len(events) == 1
+        assert events[0].source == "middleware"
+        assert events[0].policy_resolution_source == "generated"
+
 
 class TestConfigValidation:
     """Tests for config-level validation of policy_groups and default_policy."""
