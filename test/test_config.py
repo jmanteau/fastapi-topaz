@@ -1,4 +1,5 @@
 """Tests for TopazConfig lifecycle, stale cache safety, and semaphore init."""
+
 from __future__ import annotations
 
 import asyncio
@@ -16,9 +17,7 @@ def _make_config(**overrides):
     defaults = dict(
         authorizer_options=AuthorizerOptions(url="localhost:8282"),
         policy_path_root="test",
-        identity_provider=lambda r: Identity(
-            type=IdentityType.IDENTITY_TYPE_SUB, value="user-1"
-        ),
+        identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_SUB, value="user-1"),
         policy_instance_name="test",
     )
     defaults.update(overrides)
@@ -104,24 +103,18 @@ class TestLocalsAntiPatternFix:
     @pytest.mark.asyncio
     async def test_result_tracked_explicitly(self):
         """check_decision should track result without locals()."""
-        mock_client = Mock()
-        mock_client.decisions = AsyncMock(return_value={"allowed": True})
-
         config = _make_config()
 
-        def mock_create_client(self_inner, req):
-            return mock_client
+        mock_authorizer = Mock()
+        mock_authorizer.decisions = AsyncMock(return_value={"allowed": True})
+        config._authorizer = mock_authorizer
 
-        original = TopazConfig.create_client
-        TopazConfig.create_client = mock_create_client
-        try:
-            from unittest.mock import MagicMock
-            request = MagicMock()
-            request.path_params = {}
-            result = await config.check_decision(request, "test.GET.docs", "allowed")
-            assert result is True
-        finally:
-            TopazConfig.create_client = original
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.path_params = {}
+        result = await config.check_decision(request, "test.GET.docs", "allowed")
+        assert result is True
 
 
 class TestPolicyPathNormalizer:

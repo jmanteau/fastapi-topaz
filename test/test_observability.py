@@ -28,6 +28,7 @@ from fastapi_topaz import (
     TopazConfig,
     require_policy_allowed,
 )
+from fastapi_topaz._client import SharedAuthorizerClient
 
 
 @pytest.fixture
@@ -49,7 +50,7 @@ def mock_client():
 
 @pytest.fixture
 def patch_client(monkeypatch, mock_client):
-    monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock_client)
+    monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock_client.decisions)
     return mock_client
 
 

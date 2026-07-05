@@ -21,6 +21,7 @@ Test organization:
 - TestCheckRelation: Non-raising ReBAC checks
 - TestCheckRelations: Batch permission checks
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,6 +45,7 @@ from fastapi_topaz import (
     require_rebac_allowed,
     require_rebac_hierarchy,
 )
+from fastapi_topaz._client import SharedAuthorizerClient
 from fastapi_topaz._policy import _policy_path_heuristic, _resolve_policy_path
 
 
@@ -92,15 +94,15 @@ def topaz_config(authorizer_options, identity_provider):
 
 @pytest.fixture
 def patch_client(monkeypatch, mock_client):
-    """Patch TopazConfig.create_client to return mock."""
-    monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock_client)
+    """Patch the shared authorizer client to return mock."""
+    monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock_client.decisions)
     return mock_client
 
 
 @pytest.fixture
 def patch_client_denied(monkeypatch, mock_client_denied):
-    """Patch TopazConfig.create_client to return denying mock."""
-    monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock_client_denied)
+    """Patch the shared authorizer client to return denying mock."""
+    monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock_client_denied.decisions)
     return mock_client_denied
 
 
@@ -215,7 +217,10 @@ class TestPolicyPathHeuristic:
 
     def test_path_with_multiple_params(self):
         """Path with multiple parameters should convert all."""
-        assert _policy_path_heuristic("/users/{user_id}/docs/{doc_id}") == ".users.__user_id.docs.__doc_id"
+        assert (
+            _policy_path_heuristic("/users/{user_id}/docs/{doc_id}")
+            == ".users.__user_id.docs.__doc_id"
+        )
 
     def test_path_without_leading_slash(self):
         """Path without leading slash should work."""
@@ -302,8 +307,12 @@ class TestRequirePolicyAuto:
         app = FastAPI()
 
         @app.put("/users/{user_id}/documents/{doc_id}")
-        def route(user_id: str, doc_id: int, request: Request,
-                  _=Depends(require_policy_auto(topaz_config))):
+        def route(
+            user_id: str,
+            doc_id: int,
+            request: Request,
+            _=Depends(require_policy_auto(topaz_config)),
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -329,12 +338,14 @@ class TestRequirePolicyAuto:
         """Should check custom decision name."""
         mock = Mock()
         mock.decisions = AsyncMock(return_value={"can_execute": True})
-        monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock.decisions)
 
         app = FastAPI()
 
         @app.get("/run")
-        def route(request: Request, _=Depends(require_policy_auto(topaz_config, decision="can_execute"))):
+        def route(
+            request: Request, _=Depends(require_policy_auto(topaz_config, decision="can_execute"))
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -346,8 +357,12 @@ class TestRequirePolicyAuto:
         app = FastAPI()
 
         @app.get("/docs/{doc_id}/sections/{section_id}")
-        def route(doc_id: int, section_id: int, request: Request,
-                  _=Depends(require_policy_auto(topaz_config))):
+        def route(
+            doc_id: int,
+            section_id: int,
+            request: Request,
+            _=Depends(require_policy_auto(topaz_config)),
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -362,8 +377,10 @@ class TestRequirePolicyAuto:
         app = FastAPI()
 
         @app.get("/test")
-        def route(request: Request,
-                  _=Depends(require_policy_auto(topaz_config, resource_context={"extra": "data"}))):
+        def route(
+            request: Request,
+            _=Depends(require_policy_auto(topaz_config, resource_context={"extra": "data"})),
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -372,7 +389,9 @@ class TestRequirePolicyAuto:
         call_kwargs = patch_client.decisions.call_args.kwargs
         assert call_kwargs["resource_context"]["extra"] == "data"
 
-    def test_auto_calls_resource_context_provider(self, authorizer_options, identity_provider, patch_client):
+    def test_auto_calls_resource_context_provider(
+        self, authorizer_options, identity_provider, patch_client
+    ):
         """Should call resource_context_provider and merge result."""
         config = TopazConfig(
             authorizer_options=authorizer_options,
@@ -458,7 +477,9 @@ class TestRequirePolicyAllowed:
         app = FastAPI()
 
         @app.get("/test")
-        def route(request: Request, _=Depends(require_policy_allowed(topaz_config, "testapp.GET.test"))):
+        def route(
+            request: Request, _=Depends(require_policy_allowed(topaz_config, "testapp.GET.test"))
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -470,7 +491,9 @@ class TestRequirePolicyAllowed:
         app = FastAPI()
 
         @app.get("/test")
-        def route(request: Request, _=Depends(require_policy_allowed(topaz_config, "testapp.GET.test"))):
+        def route(
+            request: Request, _=Depends(require_policy_allowed(topaz_config, "testapp.GET.test"))
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -482,7 +505,9 @@ class TestRequirePolicyAllowed:
         app = FastAPI()
 
         @app.get("/test")
-        def route(request: Request, _=Depends(require_policy_allowed(topaz_config, "custom.policy.path"))):
+        def route(
+            request: Request, _=Depends(require_policy_allowed(topaz_config, "custom.policy.path"))
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -495,12 +520,15 @@ class TestRequirePolicyAllowed:
         """Should check custom decision name when specified."""
         mock = Mock()
         mock.decisions = AsyncMock(return_value={"can_execute": True})
-        monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock.decisions)
 
         app = FastAPI()
 
         @app.get("/test")
-        def route(request: Request, _=Depends(require_policy_allowed(topaz_config, "test", decision="can_execute"))):
+        def route(
+            request: Request,
+            _=Depends(require_policy_allowed(topaz_config, "test", decision="can_execute")),
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -512,8 +540,12 @@ class TestRequirePolicyAllowed:
         app = FastAPI()
 
         @app.get("/docs/{doc_id}/sections/{section_id}")
-        def route(doc_id: int, section_id: int, request: Request,
-                  _=Depends(require_policy_allowed(topaz_config, "test"))):
+        def route(
+            doc_id: int,
+            section_id: int,
+            request: Request,
+            _=Depends(require_policy_allowed(topaz_config, "test")),
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -539,7 +571,9 @@ class TestRequirePolicyAllowed:
         call_kwargs = patch_client.decisions.call_args.kwargs
         assert call_kwargs["resource_context"]["extra"] == "data"
 
-    def test_calls_resource_context_provider(self, authorizer_options, identity_provider, patch_client):
+    def test_calls_resource_context_provider(
+        self, authorizer_options, identity_provider, patch_client
+    ):
         """Should call resource_context_provider and merge result."""
         config = TopazConfig(
             authorizer_options=authorizer_options,
@@ -576,8 +610,11 @@ class TestRequireRebacAllowed:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  _=Depends(require_rebac_allowed(topaz_config, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            _=Depends(require_rebac_allowed(topaz_config, "document", "can_read")),
+        ):
             return {"id": id}
 
         client = TestClient(app)
@@ -589,8 +626,11 @@ class TestRequireRebacAllowed:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  _=Depends(require_rebac_allowed(topaz_config, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            _=Depends(require_rebac_allowed(topaz_config, "document", "can_read")),
+        ):
             return {"id": id}
 
         client = TestClient(app)
@@ -602,8 +642,11 @@ class TestRequireRebacAllowed:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  _=Depends(require_rebac_allowed(topaz_config, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            _=Depends(require_rebac_allowed(topaz_config, "document", "can_read")),
+        ):
             return {"id": id}
 
         client = TestClient(app)
@@ -617,8 +660,12 @@ class TestRequireRebacAllowed:
         app = FastAPI()
 
         @app.get("/test")
-        def route(request: Request,
-                  _=Depends(require_rebac_allowed(topaz_config, "document", "can_read", object_id="static-123"))):
+        def route(
+            request: Request,
+            _=Depends(
+                require_rebac_allowed(topaz_config, "document", "can_read", object_id="static-123")
+            ),
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -635,8 +682,12 @@ class TestRequireRebacAllowed:
             return req.query_params.get("doc_id", "")
 
         @app.get("/test")
-        def route(request: Request,
-                  _=Depends(require_rebac_allowed(topaz_config, "document", "can_read", object_id=extract_id))):
+        def route(
+            request: Request,
+            _=Depends(
+                require_rebac_allowed(topaz_config, "document", "can_read", object_id=extract_id)
+            ),
+        ):
             return {"status": "ok"}
 
         client = TestClient(app)
@@ -650,8 +701,11 @@ class TestRequireRebacAllowed:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  _=Depends(require_rebac_allowed(topaz_config, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            _=Depends(require_rebac_allowed(topaz_config, "document", "can_read")),
+        ):
             return {"id": id}
 
         client = TestClient(app)
@@ -665,8 +719,11 @@ class TestRequireRebacAllowed:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  _=Depends(require_rebac_allowed(topaz_config, "document", "can_write"))):
+        def route(
+            id: int,
+            request: Request,
+            _=Depends(require_rebac_allowed(topaz_config, "document", "can_write")),
+        ):
             return {"id": id}
 
         client = TestClient(app)
@@ -680,8 +737,13 @@ class TestRequireRebacAllowed:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  _=Depends(require_rebac_allowed(topaz_config, "document", "can_read", subject_type="service"))):
+        def route(
+            id: int,
+            request: Request,
+            _=Depends(
+                require_rebac_allowed(topaz_config, "document", "can_read", subject_type="service")
+            ),
+        ):
             return {"id": id}
 
         client = TestClient(app)
@@ -695,8 +757,11 @@ class TestRequireRebacAllowed:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  _=Depends(require_rebac_allowed(topaz_config, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            _=Depends(require_rebac_allowed(topaz_config, "document", "can_read")),
+        ):
             return {"id": id}
 
         client = TestClient(app)
@@ -705,7 +770,9 @@ class TestRequireRebacAllowed:
         call_kwargs = patch_client.decisions.call_args.kwargs
         assert call_kwargs["policy_path"] == "testapp.check"
 
-    def test_merges_resource_context_provider(self, authorizer_options, identity_provider, patch_client):
+    def test_merges_resource_context_provider(
+        self, authorizer_options, identity_provider, patch_client
+    ):
         """Should merge resource_context_provider with ReBAC fields."""
         config = TopazConfig(
             authorizer_options=authorizer_options,
@@ -718,8 +785,11 @@ class TestRequireRebacAllowed:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  _=Depends(require_rebac_allowed(config, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            _=Depends(require_rebac_allowed(config, "document", "can_read")),
+        ):
             return {"id": id}
 
         client = TestClient(app)
@@ -758,8 +828,11 @@ class TestGetAuthorizedResource:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  doc=Depends(get_authorized_resource(topaz_config, fetcher, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            doc=Depends(get_authorized_resource(topaz_config, fetcher, "document", "can_read")),
+        ):
             return {"name": doc.name}
 
         client = TestClient(app)
@@ -769,14 +842,18 @@ class TestGetAuthorizedResource:
 
     def test_returns_404_when_resource_not_found(self, topaz_config, patch_client):
         """Should return 404 when resource_fetcher returns None."""
+
         def fetcher(req):
             return None
 
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  doc=Depends(get_authorized_resource(topaz_config, fetcher, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            doc=Depends(get_authorized_resource(topaz_config, fetcher, "document", "can_read")),
+        ):
             return {"name": doc.name}
 
         client = TestClient(app)
@@ -793,8 +870,11 @@ class TestGetAuthorizedResource:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  doc=Depends(get_authorized_resource(topaz_config, fetcher, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            doc=Depends(get_authorized_resource(topaz_config, fetcher, "document", "can_read")),
+        ):
             return {"name": doc.name}
 
         client = TestClient(app)
@@ -811,8 +891,11 @@ class TestGetAuthorizedResource:
         app = FastAPI()
 
         @app.get("/docs/{id}")
-        def route(id: int, request: Request,
-                  doc=Depends(get_authorized_resource(topaz_config, fetcher, "document", "can_read"))):
+        def route(
+            id: int,
+            request: Request,
+            doc=Depends(get_authorized_resource(topaz_config, fetcher, "document", "can_read")),
+        ):
             return {"id": doc.id}
 
         client = TestClient(app)
@@ -828,7 +911,9 @@ class TestGetAuthorizedResource:
         def fetcher(req):
             return fake_doc
 
-        dep = get_authorized_resource(topaz_config, fetcher, "document", "can_read", object_id="fixed-id")
+        dep = get_authorized_resource(
+            topaz_config, fetcher, "document", "can_read", object_id="fixed-id"
+        )
 
         app = FastAPI()
 
@@ -857,8 +942,10 @@ class TestFilterAuthorizedResources:
         app = FastAPI()
 
         @app.get("/documents")
-        async def route(request: Request,
-                        filter_fn=Depends(filter_authorized_resources(topaz_config, "document", "can_read"))):
+        async def route(
+            request: Request,
+            filter_fn=Depends(filter_authorized_resources(topaz_config, "document", "can_read")),
+        ):
             return {"result": await filter_fn([])}
 
         client = TestClient(app)
@@ -875,8 +962,10 @@ class TestFilterAuthorizedResources:
         app = FastAPI()
 
         @app.get("/documents")
-        async def route(request: Request,
-                        filter_fn=Depends(filter_authorized_resources(topaz_config, "document", "can_read"))):
+        async def route(
+            request: Request,
+            filter_fn=Depends(filter_authorized_resources(topaz_config, "document", "can_read")),
+        ):
             result = await filter_fn(documents)
             return {"count": len(result), "ids": [d.id for d in result]}
 
@@ -889,18 +978,12 @@ class TestFilterAuthorizedResources:
         """Should filter out resources that fail authorization."""
         call_count = [0]
 
-        def mock_create_client(self, req):
-            mock = Mock()
+        async def decisions_side_effect(self, **kwargs):
+            call_count[0] += 1
+            obj_id = kwargs["resource_context"]["object_id"]
+            return {"allowed": obj_id == "1"}  # Only allow id=1
 
-            async def decisions_side_effect(**kwargs):
-                call_count[0] += 1
-                obj_id = kwargs["resource_context"]["object_id"]
-                return {"allowed": obj_id == "1"}  # Only allow id=1
-
-            mock.decisions = decisions_side_effect
-            return mock
-
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", decisions_side_effect)
 
         documents = [
             FakeDocument(id=1, name="Allowed", owner="alice"),
@@ -911,8 +994,10 @@ class TestFilterAuthorizedResources:
         app = FastAPI()
 
         @app.get("/documents")
-        async def route(request: Request,
-                        filter_fn=Depends(filter_authorized_resources(topaz_config, "document", "can_read"))):
+        async def route(
+            request: Request,
+            filter_fn=Depends(filter_authorized_resources(topaz_config, "document", "can_read")),
+        ):
             result = await filter_fn(documents)
             return {"ids": [d.id for d in result]}
 
@@ -922,6 +1007,7 @@ class TestFilterAuthorizedResources:
 
     def test_uses_custom_id_extractor(self, topaz_config, patch_client):
         """Should use custom id_extractor function."""
+
         @dataclass
         class CustomDoc:
             doc_id: str
@@ -932,8 +1018,7 @@ class TestFilterAuthorizedResources:
         app = FastAPI()
 
         dep = filter_authorized_resources(
-            topaz_config, "document", "can_read",
-            id_extractor=lambda d: d.doc_id
+            topaz_config, "document", "can_read", id_extractor=lambda d: d.doc_id
         )
 
         @app.get("/documents")
@@ -954,8 +1039,7 @@ class TestFilterAuthorizedResources:
         app = FastAPI()
 
         dep = filter_authorized_resources(
-            topaz_config, "document", "can_read",
-            subject_type="group"
+            topaz_config, "document", "can_read", subject_type="group"
         )
 
         @app.get("/documents")
@@ -1108,17 +1192,12 @@ class TestAsyncRoutes:
 
     async def test_async_filter_partial_authorization(self, async_app, monkeypatch):
         """Async route should filter based on per-resource authorization."""
-        def mock_create_client(self, req):
-            mock = Mock()
 
-            async def decisions_side_effect(**kwargs):
-                obj_id = kwargs["resource_context"]["object_id"]
-                return {"allowed": obj_id == "1"}  # Only allow id=1
+        async def decisions_side_effect(self, **kwargs):
+            obj_id = kwargs["resource_context"]["object_id"]
+            return {"allowed": obj_id == "1"}  # Only allow id=1
 
-            mock.decisions = decisions_side_effect
-            return mock
-
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", decisions_side_effect)
 
         async with AsyncClient(
             transport=ASGITransport(app=async_app),
@@ -1197,6 +1276,7 @@ class TestDecisionCache:
 
         # Monkeypatch time.monotonic in the cache module
         import fastapi_topaz.cache as cache_mod
+
         monkeypatch.setattr(cache_mod.time, "monotonic", mock_monotonic)
 
         cache = DecisionCache(ttl_seconds=60)
@@ -1273,13 +1353,11 @@ class TestTopazConfigWithCache:
         """With caching enabled, repeated checks should use cache."""
         call_count = [0]
 
-        def mock_create_client(self, req):
+        async def counting_decisions(self, **kwargs):
             call_count[0] += 1
-            mock = Mock()
-            mock.decisions = AsyncMock(return_value={"allowed": True})
-            return mock
+            return {"allowed": True}
 
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", counting_decisions)
 
         app = FastAPI()
 
@@ -1310,13 +1388,11 @@ class TestTopazConfigWithCache:
         """Different authorization contexts should not share cache."""
         call_count = [0]
 
-        def mock_create_client(self, req):
+        async def counting_decisions(self, **kwargs):
             call_count[0] += 1
-            mock = Mock()
-            mock.decisions = AsyncMock(return_value={"allowed": True})
-            return mock
+            return {"allowed": True}
 
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", counting_decisions)
 
         app = FastAPI()
 
@@ -1359,16 +1435,11 @@ class TestConcurrentFilter:
 
         delay = 0.05  # 50ms delay per check
 
-        async def slow_decisions(**kwargs):
+        async def slow_decisions(self, **kwargs):
             await asyncio.sleep(delay)
             return {"allowed": True}
 
-        def mock_create_client(self, req):
-            mock = Mock()
-            mock.decisions = slow_decisions
-            return mock
-
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", slow_decisions)
 
         app = FastAPI()
 
@@ -1397,24 +1468,21 @@ class TestConcurrentFilter:
         # Allow some overhead, but should be significantly less than sequential
         assert data["elapsed"] < 0.3  # Should be ~50-100ms with concurrency
 
-    async def test_semaphore_limits_concurrency(self, authorizer_options, identity_provider, monkeypatch):
+    async def test_semaphore_limits_concurrency(
+        self, authorizer_options, identity_provider, monkeypatch
+    ):
         """Semaphore should limit concurrent authorization checks."""
         max_concurrent = [0]
         current_concurrent = [0]
 
-        async def tracking_decisions(**kwargs):
+        async def tracking_decisions(self, **kwargs):
             current_concurrent[0] += 1
             max_concurrent[0] = max(max_concurrent[0], current_concurrent[0])
             await asyncio.sleep(0.02)
             current_concurrent[0] -= 1
             return {"allowed": True}
 
-        def mock_create_client(self, req):
-            mock = Mock()
-            mock.decisions = tracking_decisions
-            return mock
-
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", tracking_decisions)
 
         # Config with max 3 concurrent checks
         config = TopazConfig(
@@ -1471,9 +1539,7 @@ class TestIsAllowed:
             )
             return {"can_edit": can_edit}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/docs/123")
 
         assert response.status_code == 200
@@ -1485,14 +1551,10 @@ class TestIsAllowed:
 
         @app.get("/docs/{id}")
         async def route(id: int, request: Request):
-            can_edit = await topaz_config.is_allowed(
-                request, policy_path="testapp.PUT.documents"
-            )
+            can_edit = await topaz_config.is_allowed(request, policy_path="testapp.PUT.documents")
             return {"can_edit": can_edit}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/docs/123")
 
         assert response.status_code == 200  # No 403!
@@ -1511,9 +1573,7 @@ class TestIsAllowed:
             )
             return {"status": "ok"}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             await client.get("/docs/456")
 
         call_kwargs = patch_client.decisions.call_args.kwargs
@@ -1541,9 +1601,7 @@ class TestCheckRelation:
             )
             return {"can_delete": can_delete}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/docs/123")
 
         assert response.json()["can_delete"] is True
@@ -1559,9 +1617,7 @@ class TestCheckRelation:
             )
             return {"can_delete": can_delete}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/docs/123")
 
         assert response.status_code == 200  # No 403!
@@ -1578,9 +1634,7 @@ class TestCheckRelation:
             )
             return {"status": "ok"}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             await client.get("/test")
 
         call_kwargs = patch_client.decisions.call_args.kwargs
@@ -1600,15 +1654,12 @@ class TestCheckRelations:
 
     async def test_returns_dict_of_permissions(self, topaz_config, monkeypatch):
         """check_relations should return dict mapping relations to booleans."""
-        def mock_create_client(self, req):
-            mock = Mock()
-            async def decisions_side_effect(**kwargs):
-                rel = kwargs["resource_context"]["relation"]
-                return {"allowed": rel in ["can_read", "can_write"]}
-            mock.decisions = decisions_side_effect
-            return mock
 
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+        async def decisions_side_effect(self, **kwargs):
+            rel = kwargs["resource_context"]["relation"]
+            return {"allowed": rel in ["can_read", "can_write"]}
+
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", decisions_side_effect)
 
         app = FastAPI()
 
@@ -1622,9 +1673,7 @@ class TestCheckRelations:
             )
             return {"permissions": perms}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/docs/123")
 
         perms = response.json()["permissions"]
@@ -1635,19 +1684,14 @@ class TestCheckRelations:
         max_concurrent = [0]
         current = [0]
 
-        async def tracking_decisions(**kwargs):
+        async def tracking_decisions(self, **kwargs):
             current[0] += 1
             max_concurrent[0] = max(max_concurrent[0], current[0])
             await asyncio.sleep(0.01)
             current[0] -= 1
             return {"allowed": True}
 
-        def mock_create_client(self, req):
-            mock = Mock()
-            mock.decisions = tracking_decisions
-            return mock
-
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", tracking_decisions)
 
         app = FastAPI()
 
@@ -1661,9 +1705,7 @@ class TestCheckRelations:
             )
             return {"max_concurrent": max_concurrent[0]}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/test")
 
         # Should have some concurrency (more than 1)
@@ -1694,14 +1736,12 @@ class TestCheckHierarchy:
 
     async def test_mode_all_fails_with_denied_at(self, topaz_config, monkeypatch):
         """Mode 'all' should return denied_at when a check fails."""
-        def mock_create_client(self, req):
-            mock = Mock()
-            async def decisions_side_effect(**kwargs):
-                obj_type = kwargs["resource_context"]["object_type"]
-                return {"allowed": obj_type != "project"}
-            mock.decisions = decisions_side_effect
-            return mock
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+
+        async def decisions_side_effect(self, **kwargs):
+            obj_type = kwargs["resource_context"]["object_type"]
+            return {"allowed": obj_type != "project"}
+
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", decisions_side_effect)
 
         app = FastAPI()
 
@@ -1721,14 +1761,12 @@ class TestCheckHierarchy:
 
     async def test_mode_any_passes_when_one_allowed(self, topaz_config, monkeypatch):
         """Mode 'any' should return allowed=True when at least one check passes."""
-        def mock_create_client(self, req):
-            mock = Mock()
-            async def decisions_side_effect(**kwargs):
-                rel = kwargs["resource_context"]["relation"]
-                return {"allowed": rel == "viewer"}
-            mock.decisions = decisions_side_effect
-            return mock
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+
+        async def decisions_side_effect(self, **kwargs):
+            rel = kwargs["resource_context"]["relation"]
+            return {"allowed": rel == "viewer"}
+
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", decisions_side_effect)
 
         app = FastAPI()
 
@@ -1748,14 +1786,12 @@ class TestCheckHierarchy:
 
     async def test_mode_first_match_returns_relation(self, topaz_config, monkeypatch):
         """Mode 'first_match' should return the first matching relation."""
-        def mock_create_client(self, req):
-            mock = Mock()
-            async def decisions_side_effect(**kwargs):
-                rel = kwargs["resource_context"]["relation"]
-                return {"allowed": rel == "editor"}
-            mock.decisions = decisions_side_effect
-            return mock
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+
+        async def decisions_side_effect(self, **kwargs):
+            rel = kwargs["resource_context"]["relation"]
+            return {"allowed": rel == "editor"}
+
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", decisions_side_effect)
 
         app = FastAPI()
 
@@ -1763,7 +1799,11 @@ class TestCheckHierarchy:
         async def route(doc_id: str, request: Request):
             result = await topaz_config.check_hierarchy(
                 request,
-                checks=[("document", "doc_id", "owner"), ("document", "doc_id", "editor"), ("document", "doc_id", "viewer")],
+                checks=[
+                    ("document", "doc_id", "owner"),
+                    ("document", "doc_id", "editor"),
+                    ("document", "doc_id", "viewer"),
+                ],
                 mode="first_match",
             )
             return {"allowed": result.allowed, "first_match": result.first_match}
@@ -1785,11 +1825,18 @@ class TestRequireRebacHierarchy:
 
         @app.get("/orgs/{org_id}/docs/{doc_id}")
         async def route(
-            org_id: str, doc_id: str, request: Request,
-            _=Depends(require_rebac_hierarchy(topaz_config, [
-                ("organization", "org_id", "member"),
-                ("document", "doc_id", "can_read"),
-            ])),
+            org_id: str,
+            doc_id: str,
+            request: Request,
+            _=Depends(
+                require_rebac_hierarchy(
+                    topaz_config,
+                    [
+                        ("organization", "org_id", "member"),
+                        ("document", "doc_id", "can_read"),
+                    ],
+                )
+            ),
         ):
             return {"status": "ok"}
 
@@ -1800,23 +1847,28 @@ class TestRequireRebacHierarchy:
 
     async def test_denies_with_403_when_check_fails(self, topaz_config, monkeypatch):
         """Should return 403 when a hierarchy check fails."""
-        def mock_create_client(self, req):
-            mock = Mock()
-            async def decisions_side_effect(**kwargs):
-                return {"allowed": kwargs["resource_context"]["object_type"] == "organization"}
-            mock.decisions = decisions_side_effect
-            return mock
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+
+        async def decisions_side_effect(self, **kwargs):
+            return {"allowed": kwargs["resource_context"]["object_type"] == "organization"}
+
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", decisions_side_effect)
 
         app = FastAPI()
 
         @app.get("/orgs/{org_id}/docs/{doc_id}")
         async def route(
-            org_id: str, doc_id: str, request: Request,
-            _=Depends(require_rebac_hierarchy(topaz_config, [
-                ("organization", "org_id", "member"),
-                ("document", "doc_id", "can_read"),
-            ])),
+            org_id: str,
+            doc_id: str,
+            request: Request,
+            _=Depends(
+                require_rebac_hierarchy(
+                    topaz_config,
+                    [
+                        ("organization", "org_id", "member"),
+                        ("document", "doc_id", "can_read"),
+                    ],
+                )
+            ),
         ):
             return {"status": "ok"}
 

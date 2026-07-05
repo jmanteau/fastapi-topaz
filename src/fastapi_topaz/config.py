@@ -1,4 +1,5 @@
 """TopazConfig and supporting types for Topaz authorization."""
+
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +13,7 @@ from aserto.client import AuthorizerOptions, Identity, ResourceContext
 from aserto.client.authorizer.aio import AuthorizerClient
 from fastapi import Request
 
+from ._client import SharedAuthorizerClient
 from ._policy import _resolve_policy_path
 
 if TYPE_CHECKING:
@@ -24,9 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("fastapi_topaz")
 
 
-def _resolve_id_source(
-    id_source: str | Callable[[Request], str], request: Request
-) -> str:
+def _resolve_id_source(id_source: str | Callable[[Request], str], request: Request) -> str:
     """
     Resolve an ID source to an actual value.
 
@@ -130,8 +130,11 @@ class TopazConfig:
             The first group whose ``url_pattern`` matches the route template wins.
         decision_cache: Optional cache for authorization decisions
         max_concurrent_checks: Max concurrent authorization checks for bulk operations (default: 10)
+        check_timeout: gRPC deadline in seconds applied to each authorization
+            call (default: 5.0). Set to None to disable the deadline.
         circuit_breaker: Optional circuit breaker for graceful degradation
-        connection_pool: Optional connection pool for gRPC connection reuse
+        connection_pool: Deprecated, has no effect on authorization calls
+            (authorization checks use a single shared gRPC channel)
         audit_logger: Optional audit logger for authorization decisions
         metrics: Optional Prometheus metrics collector
         tracing: Optional OpenTelemetry tracing
@@ -151,6 +154,7 @@ class TopazConfig:
         policy_groups: list[PolicyGroup] | None = None,
         decision_cache: DecisionCache | None = None,
         max_concurrent_checks: int = 10,
+        check_timeout: float | None = 5.0,
         circuit_breaker: CircuitBreaker | None = None,
         connection_pool: ConnectionPool | None = None,
         audit_logger: AuditLogger | None = None,
@@ -168,11 +172,13 @@ class TopazConfig:
         self.policy_groups = tuple(policy_groups or [])
         self.decision_cache = decision_cache
         self.max_concurrent_checks = max_concurrent_checks
+        self.check_timeout = check_timeout
         self.circuit_breaker = circuit_breaker
         self.connection_pool = connection_pool
         self.audit_logger = audit_logger
         self.metrics = metrics
         self.tracing = tracing
+        self._authorizer = SharedAuthorizerClient(authorizer_options)
         self._semaphore = asyncio.Semaphore(max_concurrent_checks)
         # Stale cache for circuit breaker fallback (stores entries beyond normal TTL)
         self._stale_cache: dict[str, tuple[bool, float]] = {}
@@ -193,7 +199,13 @@ class TopazConfig:
             self.connection_pool.configure(authorizer_options)
 
     def create_client(self, request: Request) -> AuthorizerClient:
-        """Create a Topaz authorizer client with identity from request."""
+        """Create a Topaz authorizer client with identity from request.
+
+        .. deprecated::
+            No longer used internally — authorization checks go through a
+            single shared gRPC channel. Each call to this method opens a new
+            channel that the caller must close. Will be removed in 2.0.
+        """
         identity = self.identity_provider(request)
         return AuthorizerClient(identity=identity, options=self.authorizer_options)
 
@@ -220,9 +232,7 @@ class TopazConfig:
         if not self.circuit_breaker or not self.circuit_breaker.serve_stale_cache:
             return None
 
-        key = self._make_stale_cache_key(
-            identity_value, policy_path, decision, resource_context
-        )
+        key = self._make_stale_cache_key(identity_value, policy_path, decision, resource_context)
         async with self._stale_cache_lock:
             if key not in self._stale_cache:
                 return None
@@ -249,9 +259,7 @@ class TopazConfig:
         if not self.circuit_breaker:
             return
 
-        key = self._make_stale_cache_key(
-            identity_value, policy_path, decision, resource_context
-        )
+        key = self._make_stale_cache_key(identity_value, policy_path, decision, resource_context)
         async with self._stale_cache_lock:
             self._stale_cache[key] = (value, time.monotonic())
 
@@ -349,18 +357,16 @@ class TopazConfig:
 
                     return result
 
-            # Make the authorization call
-            # Note: ConnectionPool cannot be used here because AuthorizerClient
-            # binds identity at construction time and decisions() offers no
-            # per-call identity override. Each request needs its own client.
+            # Make the authorization call over the shared channel
             topaz_start = time.monotonic()
-            client = self.create_client(request)
-            decisions_result = await client.decisions(
+            decisions_result = await self._authorizer.decisions(
+                identity=identity,
                 policy_path=policy_path,
                 decisions=(decision,),
                 policy_instance_name=self.policy_instance_name,
                 policy_instance_label=self.policy_instance_label,
                 resource_context=resource_context,
+                timeout=self.check_timeout,
             )
             result = decisions_result.get(decision, False)
             topaz_latency = time.monotonic() - topaz_start
@@ -421,9 +427,7 @@ class TopazConfig:
 
                 if self.circuit_breaker.on_fallback:
                     try:
-                        self.circuit_breaker.on_fallback(
-                            request, policy_path, stale_cached, result
-                        )
+                        self.circuit_breaker.on_fallback(request, policy_path, stale_cached, result)
                     except Exception as cb_error:
                         logger.error(f"Error in on_fallback callback: {cb_error}")
 
@@ -445,9 +449,7 @@ class TopazConfig:
                     check_type="policy",
                     policy_path=policy_path,
                 )
-                self.metrics.record_latency(
-                    latency_seconds, source, cached_result, policy_path
-                )
+                self.metrics.record_latency(latency_seconds, source, cached_result, policy_path)
 
             # End tracing span
             if self.tracing and span:
@@ -569,12 +571,14 @@ class TopazConfig:
         if self.resource_context_provider:
             resource_ctx.update(self.resource_context_provider(request))
 
-        resource_ctx.update({
-            "object_type": object_type,
-            "object_id": object_id,
-            "relation": relation,
-            "subject_type": subject_type,
-        })
+        resource_ctx.update(
+            {
+                "object_type": object_type,
+                "object_id": object_id,
+                "relation": relation,
+                "subject_type": subject_type,
+            }
+        )
 
         policy_path = f"{self.policy_path_root}.check"
         return await self.check_decision(request, policy_path, "allowed", resource_ctx)
@@ -620,6 +624,7 @@ class TopazConfig:
                 return {"document": doc, "permissions": permissions}
             ```
         """
+
         async def check_single_relation(rel: str) -> tuple[str, bool]:
             async with self._semaphore:
                 result = await self.check_relation(
@@ -676,14 +681,10 @@ class TopazConfig:
         """
         # For first_match, order matters - run sequentially
         if mode == "first_match" or not optimize:
-            return await self._check_hierarchy_sequential(
-                request, checks, mode, subject_type
-            )
+            return await self._check_hierarchy_sequential(request, checks, mode, subject_type)
 
         # For "all" and "any" modes with optimize=True, run concurrently
-        return await self._check_hierarchy_concurrent(
-            request, checks, mode, subject_type
-        )
+        return await self._check_hierarchy_concurrent(request, checks, mode, subject_type)
 
     async def _check_hierarchy_sequential(
         self,
@@ -704,15 +705,11 @@ class TopazConfig:
 
             # Short-circuit based on mode
             if mode == "all" and not allowed:
-                return HierarchyResult(
-                    allowed=False, checks=results, denied_at=object_type
-                )
+                return HierarchyResult(allowed=False, checks=results, denied_at=object_type)
             elif mode == "any" and allowed:
                 return HierarchyResult(allowed=True, checks=results)
             elif mode == "first_match" and allowed:
-                return HierarchyResult(
-                    allowed=True, checks=results, first_match=relation
-                )
+                return HierarchyResult(allowed=True, checks=results, first_match=relation)
 
         # Final result
         if mode == "all":
@@ -747,9 +744,7 @@ class TopazConfig:
             # Find first denied
             for obj_type, _obj_id, _rel, allowed in results_list:
                 if not allowed:
-                    return HierarchyResult(
-                        allowed=False, checks=results_list, denied_at=obj_type
-                    )
+                    return HierarchyResult(allowed=False, checks=results_list, denied_at=obj_type)
             return HierarchyResult(allowed=True, checks=results_list)
         else:  # mode == "any"
             # Find any allowed
@@ -758,6 +753,7 @@ class TopazConfig:
 
     async def close(self) -> None:
         """Shut down TopazConfig and release resources."""
+        await self._authorizer.close()
         if self.connection_pool:
             await self.connection_pool.close()
         if self.decision_cache:
@@ -772,4 +768,3 @@ class TopazConfig:
     ) -> None:
         """Exit async context manager, closing resources."""
         await self.close()
-

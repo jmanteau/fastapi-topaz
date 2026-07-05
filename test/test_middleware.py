@@ -35,6 +35,7 @@ from fastapi_topaz import (
     normalize_hyphens,
     skip_middleware,
 )
+from fastapi_topaz._client import SharedAuthorizerClient
 
 
 @pytest.fixture
@@ -78,15 +79,15 @@ def mock_client_denied():
 
 @pytest.fixture
 def patch_client(monkeypatch, mock_client):
-    """Patch TopazConfig to use mock_client (allows all)."""
-    monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock_client)
+    """Patch the shared authorizer client to use mock_client (allows all)."""
+    monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock_client.decisions)
     return mock_client
 
 
 @pytest.fixture
 def patch_client_denied(monkeypatch, mock_client_denied):
-    """Patch TopazConfig to use mock_client_denied (denies all)."""
-    monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock_client_denied)
+    """Patch the shared authorizer client to use mock_client_denied (denies all)."""
+    monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock_client_denied.decisions)
     return mock_client_denied
 
 
@@ -383,13 +384,11 @@ class TestMiddlewareWithCache:
     def test_caches_decisions(self, authorizer_options, identity_provider, monkeypatch):
         call_count = [0]
 
-        def mock_create_client(self, req):
+        async def counting_decisions(self, **kwargs):
             call_count[0] += 1
-            mock = Mock()
-            mock.decisions = AsyncMock(return_value={"allowed": True})
-            return mock
+            return {"allowed": True}
 
-        monkeypatch.setattr(TopazConfig, "create_client", mock_create_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", counting_decisions)
 
         config = TopazConfig(
             authorizer_options=authorizer_options,
@@ -426,12 +425,11 @@ class TestMiddlewareErrorHandling:
     def test_connection_error_denies_access(self, topaz_config, monkeypatch):
         """Connection errors result in 403 (fail-safe denial) without circuit breaker."""
 
-        def failing_client(self, req):
-            mock = Mock()
-            mock.decisions = AsyncMock(side_effect=ConnectionError("authorizer unreachable"))
-            return mock
-
-        monkeypatch.setattr(TopazConfig, "create_client", failing_client)
+        monkeypatch.setattr(
+            SharedAuthorizerClient,
+            "decisions",
+            AsyncMock(side_effect=ConnectionError("authorizer unreachable")),
+        )
 
         app = FastAPI()
         app.add_middleware(TopazMiddleware, config=topaz_config)
@@ -449,12 +447,11 @@ class TestMiddlewareErrorHandling:
         """Timeout errors result in 403 (fail-safe denial) without circuit breaker."""
         import asyncio
 
-        def timeout_client(self, req):
-            mock = Mock()
-            mock.decisions = AsyncMock(side_effect=asyncio.TimeoutError("request timed out"))
-            return mock
-
-        monkeypatch.setattr(TopazConfig, "create_client", timeout_client)
+        monkeypatch.setattr(
+            SharedAuthorizerClient,
+            "decisions",
+            AsyncMock(side_effect=asyncio.TimeoutError("request timed out")),
+        )
 
         app = FastAPI()
         app.add_middleware(TopazMiddleware, config=topaz_config)
@@ -483,7 +480,7 @@ class TestPolicyPathNormalizer:
         """Middleware should pass normalizer through to _resolve_policy_path."""
         mock_client = Mock()
         mock_client.decisions = AsyncMock(return_value={"allowed": True})
-        monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock_client.decisions)
 
         config = TopazConfig(
             authorizer_options=authorizer_options,
@@ -850,7 +847,7 @@ class TestAuditResolutionSource:
         """log_decision() receives policy_resolution_source from middleware."""
         mock_client = Mock()
         mock_client.decisions = AsyncMock(return_value={"allowed": True})
-        monkeypatch.setattr(TopazConfig, "create_client", lambda self, req: mock_client)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", mock_client.decisions)
 
         audit_logger = AuditLogger()
         # Capture the call args

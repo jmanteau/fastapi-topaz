@@ -29,6 +29,7 @@ from fastapi import Depends, FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_topaz import TopazConfig, require_policy_allowed
+from fastapi_topaz._client import SharedAuthorizerClient
 from fastapi_topaz.circuit_breaker import CircuitBreaker, CircuitState
 
 
@@ -315,12 +316,11 @@ class TestCircuitBreakerIntegration:
             circuit_breaker=cb,
         )
 
-        def failing_client(self, req):
-            mock = Mock()
-            mock.decisions = AsyncMock(side_effect=ConnectionError("down"))
-            return mock
-
-        monkeypatch.setattr(TopazConfig, "create_client", failing_client)
+        monkeypatch.setattr(
+            SharedAuthorizerClient,
+            "decisions",
+            AsyncMock(side_effect=ConnectionError("down")),
+        )
 
         app = FastAPI()
 
@@ -350,16 +350,13 @@ class TestCircuitBreakerIntegration:
 
         call_count = [0]
 
-        def client_factory(self, req):
+        async def flaky_decisions(self, **kwargs):
             call_count[0] += 1
-            mock = Mock()
             if call_count[0] == 1:
-                mock.decisions = AsyncMock(return_value={"allowed": True})
-            else:
-                mock.decisions = AsyncMock(side_effect=ConnectionError("down"))
-            return mock
+                return {"allowed": True}
+            raise ConnectionError("down")
 
-        monkeypatch.setattr(TopazConfig, "create_client", client_factory)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", flaky_decisions)
 
         app = FastAPI()
 
