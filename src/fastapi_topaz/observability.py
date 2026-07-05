@@ -4,6 +4,7 @@ Observability: Metrics & Tracing for authorization.
 Optional integrations for monitoring authorization performance.
 Zero overhead when not configured.
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,6 +23,7 @@ try:
         Gauge,
         Histogram,
     )
+
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
@@ -31,6 +33,7 @@ except ImportError:
 try:
     from opentelemetry import trace  # type: ignore[import-not-found]
     from opentelemetry.trace import Status, StatusCode  # type: ignore[import-not-found]
+
     OTEL_AVAILABLE = True
 except ImportError:
     OTEL_AVAILABLE = False
@@ -41,6 +44,11 @@ except ImportError:
 class PrometheusMetrics:
     """
     Prometheus metrics collector for authorization decisions.
+
+    When two instances share a registry (e.g. two PrometheusMetrics created
+    with the default global REGISTRY), the second instance reuses the
+    collectors already registered under the same metric names instead of
+    raising ``ValueError: Duplicated timeseries``.
 
     Args:
         prefix: Metric name prefix (default: "topaz")
@@ -80,6 +88,16 @@ class PrometheusMetrics:
         registry = self.registry or REGISTRY
         p = self.prefix
 
+        def _get_or_create(collector_cls: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+            """Create a collector, reusing an existing one on duplicate registration."""
+            try:
+                return collector_cls(name, *args, **kwargs)
+            except ValueError:
+                existing = getattr(registry, "_names_to_collectors", {}).get(name)
+                if existing is None:
+                    raise
+                return existing
+
         # Build label sets
         base_labels = ["source", "decision", "check_type"]
         if self.include_policy_path:
@@ -90,37 +108,43 @@ class PrometheusMetrics:
             latency_labels.append("policy_path")
 
         # Counters
-        self._auth_requests = Counter(
+        self._auth_requests = _get_or_create(
+            Counter,
             f"{p}_auth_requests_total",
             "Total authorization requests",
             base_labels,
             registry=registry,
         )
-        self._cache_hits = Counter(
+        self._cache_hits = _get_or_create(
+            Counter,
             f"{p}_cache_hits_total",
             "Cache hits",
             ["source"],
             registry=registry,
         )
-        self._cache_misses = Counter(
+        self._cache_misses = _get_or_create(
+            Counter,
             f"{p}_cache_misses_total",
             "Cache misses",
             ["source"],
             registry=registry,
         )
-        self._errors = Counter(
+        self._errors = _get_or_create(
+            Counter,
             f"{p}_errors_total",
             "Authorization errors",
             ["error_type"],
             registry=registry,
         )
-        self._circuit_transitions = Counter(
+        self._circuit_transitions = _get_or_create(
+            Counter,
             f"{p}_circuit_transitions_total",
             "Circuit state transitions",
             ["from_state", "to_state"],
             registry=registry,
         )
-        self._fallback = Counter(
+        self._fallback = _get_or_create(
+            Counter,
             f"{p}_fallback_total",
             "Circuit breaker fallbacks",
             ["strategy", "cache_hit", "decision"],
@@ -128,26 +152,30 @@ class PrometheusMetrics:
         )
 
         # Gauges
-        self._circuit_state = Gauge(
+        self._circuit_state = _get_or_create(
+            Gauge,
             f"{p}_circuit_state",
             "Current circuit state (0=closed, 1=open, 2=half_open)",
             registry=registry,
         )
-        self._cache_size = Gauge(
+        self._cache_size = _get_or_create(
+            Gauge,
             f"{p}_cache_size",
             "Current number of cached decisions",
             registry=registry,
         )
 
         # Histograms
-        self._auth_latency = Histogram(
+        self._auth_latency = _get_or_create(
+            Histogram,
             f"{p}_auth_latency_seconds",
             "End-to-end authorization latency",
             latency_labels,
             buckets=self.latency_buckets,
             registry=registry,
         )
-        self._topaz_latency = Histogram(
+        self._topaz_latency = _get_or_create(
+            Histogram,
             f"{p}_topaz_latency_seconds",
             "Actual Topaz call latency",
             registry=registry,

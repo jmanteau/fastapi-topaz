@@ -91,6 +91,54 @@ class TestPrometheusMetrics:
         metrics.record_error("TestError")
         metrics.set_circuit_state(0)
 
+    def test_duplicate_instances_do_not_raise(self):
+        """Regression (B7): two instances sharing the global registry reuse
+        existing collectors instead of raising 'Duplicated timeseries'."""
+        first = PrometheusMetrics(prefix="dup_test")
+        second = PrometheusMetrics(prefix="dup_test")
+        first.record_auth_request("middleware", "allowed", "policy")
+        second.record_auth_request("middleware", "allowed", "policy")
+        first.record_latency(0.01, "middleware", False)
+        second.record_latency(0.02, "middleware", False)
+        second.set_circuit_state(1)
+
+    def test_metrics_increment_with_real_collectors(self):
+        """With prometheus_client installed, counters actually increment."""
+        prometheus_client = pytest.importorskip("prometheus_client")
+        registry = prometheus_client.CollectorRegistry()
+        metrics = PrometheusMetrics(prefix="real_test", registry=registry)
+
+        metrics.record_auth_request("middleware", "allowed", "policy")
+        metrics.record_auth_request("middleware", "allowed", "policy")
+        metrics.record_cache_hit("dependency")
+        metrics.set_cache_size(42)
+
+        assert (
+            registry.get_sample_value(
+                "real_test_auth_requests_total",
+                {"source": "middleware", "decision": "allowed", "check_type": "policy"},
+            )
+            == 2
+        )
+        assert (
+            registry.get_sample_value("real_test_cache_hits_total", {"source": "dependency"}) == 1
+        )
+        assert registry.get_sample_value("real_test_cache_size") == 42
+
+    def test_duplicate_instances_share_collectors(self):
+        """Both instances record into the same underlying collector."""
+        prometheus_client = pytest.importorskip("prometheus_client")
+        registry = prometheus_client.CollectorRegistry()
+        first = PrometheusMetrics(prefix="shared_test", registry=registry)
+        second = PrometheusMetrics(prefix="shared_test", registry=registry)
+
+        first.record_cache_hit("middleware")
+        second.record_cache_hit("middleware")
+
+        assert (
+            registry.get_sample_value("shared_test_cache_hits_total", {"source": "middleware"}) == 2
+        )
+
 
 class TestPrometheusMetricsIntegration:
     """Integration with TopazConfig - metrics are recorded during authorization."""
