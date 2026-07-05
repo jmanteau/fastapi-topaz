@@ -4,9 +4,7 @@ import logging
 import sys
 from pathlib import Path
 
-import grpc
 import httpx
-from aserto.client.authorizer import AuthorizerClient
 from fastapi import Request
 from fastapi_topaz import (
     AuditLogger,
@@ -23,30 +21,6 @@ from fastapi_topaz.config import PolicyGroup
 logger = logging.getLogger(__name__)
 
 from app.config import settings
-
-# Monkey-patch AuthorizerClient for insecure local development
-_original_init = AuthorizerClient.__init__
-
-
-def _insecure_init(self, *, tenant_id=None, identity, options):
-    """Custom init that uses insecure channel for local development."""
-    self._tenant_id = tenant_id
-    self._options = options
-    from aserto.authorizer.v2.api import IdentityContext
-
-    self._identity_context_field = IdentityContext(
-        identity=identity.value or "",
-        type=identity.type,
-    )
-    # Use insecure channel for local development
-    self._channel = grpc.insecure_channel(target=options.url)
-    from aserto.authorizer.v2 import authorizer_pb2_grpc
-
-    self.client = authorizer_pb2_grpc.AuthorizerStub(self._channel)
-
-
-# Apply monkey patch
-AuthorizerClient.__init__ = _insecure_init
 
 # Add fastapi-topaz to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fastapi-topaz" / "src"))
@@ -111,15 +85,19 @@ def resource_context_provider(request: Request) -> ResourceContext:
                     # Add document data to context for policy evaluation
                     context["owner_id"] = document.owner_id
                     context["is_public"] = document.is_public
-                    logger.debug(f"Document {doc_id}: owner_id={document.owner_id}, current_user.sub={context.get('current_user', {}).get('sub')}")
+                    logger.debug(
+                        f"Document {doc_id}: owner_id={document.owner_id}, current_user.sub={context.get('current_user', {}).get('sub')}"
+                    )
 
                     # Add shares data
                     shares = []
                     for share in document.shares:
-                        shares.append({
-                            "user_id": share.user_id,
-                            "permission": share.permission,
-                        })
+                        shares.append(
+                            {
+                                "user_id": share.user_id,
+                                "permission": share.permission,
+                            }
+                        )
                     context["shares"] = shares
                 else:
                     logger.debug(f"Document {doc_id} NOT FOUND")
@@ -143,7 +121,9 @@ def resource_context_provider(request: Request) -> ResourceContext:
                 if folder:
                     # Add folder data to context for policy evaluation
                     context["owner_id"] = folder.owner_id
-                    logger.debug(f"Folder {folder_id}: owner_id={folder.owner_id}, user_sub={context.get('current_user', {}).get('sub')}")
+                    logger.debug(
+                        f"Folder {folder_id}: owner_id={folder.owner_id}, user_sub={context.get('current_user', {}).get('sub')}"
+                    )
                 else:
                     logger.debug(f"Folder {folder_id} NOT FOUND")
             finally:
@@ -178,7 +158,13 @@ topaz_config = TopazConfig(
         ),
     ],
     decision_cache=DecisionCache(ttl_seconds=60, max_size=1000),
-    circuit_breaker=CircuitBreaker(failure_threshold=5, recovery_timeout=30, fallback="cache_then_deny", serve_stale_cache=True, stale_cache_ttl=300),
+    circuit_breaker=CircuitBreaker(
+        failure_threshold=5,
+        recovery_timeout=30,
+        fallback="cache_then_deny",
+        serve_stale_cache=True,
+        stale_cache_ttl=300,
+    ),
     audit_logger=AuditLogger(),
 )
 
