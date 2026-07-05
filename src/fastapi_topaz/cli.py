@@ -79,7 +79,7 @@ def cmd_generate_policies(args: argparse.Namespace) -> int:
 
     print(f"Generated {len(policies)} policies in {output}/")
     for path in sorted(policies.keys()):
-        print(f"  ✓ {path}")
+        print(f"  OK {path}")
 
     return 0
 
@@ -110,28 +110,28 @@ def cmd_policy_diff(args: argparse.Namespace) -> int:
     diff = policy_diff(app, config, policies_dir)
 
     if diff.missing:
-        print(f"\n❌ Missing policies ({len(diff.missing)}):")
+        print(f"\nMissing policies ({len(diff.missing)}):")
         for m in diff.missing:
             print(f"   - {m.policy_path}")
             print(f"     Route: {m.method} {m.path}")
 
     if diff.orphaned:
-        print(f"\n⚠️  Orphaned policies ({len(diff.orphaned)}):")
+        print(f"\nWARNING: Orphaned policies ({len(diff.orphaned)}):")
         for o in diff.orphaned:
             print(f"   - {o}")
 
     if diff.group_covered:
-        print(f"\n✓ Covered by policy group ({len(diff.group_covered)}):")
+        print(f"\nOK Covered by policy group ({len(diff.group_covered)}):")
         for g in diff.group_covered:
             print(f"   - {g}")
 
     if diff.default_covered:
-        print(f"\n✓ Covered by default policy ({len(diff.default_covered)}):")
+        print(f"\nOK Covered by default policy ({len(diff.default_covered)}):")
         for d in diff.default_covered:
             print(f"   - {d}")
 
     if diff.valid:
-        print(f"\n✓ Explicit policies: {len(diff.valid)}")
+        print(f"\nOK Explicit policies: {len(diff.valid)}")
 
     total_covered = len(diff.valid) + len(diff.group_covered) + len(diff.default_covered)
     if diff.has_issues:
@@ -141,7 +141,7 @@ def cmd_policy_diff(args: argparse.Namespace) -> int:
         )
         return 1 if args.strict or diff.missing else 0
 
-    print("\n✓ All policies are in sync!")
+    print("\nOK All policies are in sync!")
     return 0
 
 

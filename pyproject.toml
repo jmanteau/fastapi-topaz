@@ -48,9 +48,9 @@ docs = [
 fastapi-topaz = "fastapi_topaz.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/opcr-io/topaz"
-Repository = "https://github.com/opcr-io/topaz"
-Documentation = "https://www.topaz.sh/docs"
+Homepage = "https://github.com/jmanteau/fastapi-topaz"
+Repository = "https://github.com/jmanteau/fastapi-topaz"
+Documentation = "https://jmanteau.github.io/fastapi-topaz"
 
 [build-system]
 requires = ["hatchling"]

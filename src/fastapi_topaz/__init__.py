@@ -1,6 +1,12 @@
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from aserto.client import AuthorizerOptions, Identity, IdentityType, ResourceContext
+
+try:
+    __version__ = version("fastapi-topaz")
+except PackageNotFoundError:  # editable/dev install without metadata
+    __version__ = "0.0.0.dev0"
 
 from ._defaults import Obj
 from ._policy import normalize_hyphens
@@ -46,6 +52,8 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    # Metadata
+    "__version__",
     # Core
     "DecisionCache",
     "HierarchyResult",
