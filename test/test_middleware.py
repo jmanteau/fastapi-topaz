@@ -1062,3 +1062,65 @@ class TestOnErrorOption:
 
         assert response.status_code == 401
         assert any("identity_provider raised" in r.message for r in caplog.records)
+
+
+class TestRouteMatchCache:
+    """Static route matches are cached per (method, path); parameterized are not."""
+
+    @staticmethod
+    def _find_middleware(app: FastAPI) -> TopazMiddleware:
+        # The middleware stack is built on the first request; walk it to find
+        # the live TopazMiddleware instance
+        layer = app.middleware_stack
+        while layer is not None and not isinstance(layer, TopazMiddleware):
+            layer = getattr(layer, "app", None)
+        assert isinstance(layer, TopazMiddleware)
+        return layer
+
+    def test_static_route_is_cached(self, topaz_config, patch_client):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/documents")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        assert client.get("/documents").status_code == 200
+
+        middleware = self._find_middleware(app)
+        assert ("GET", "/documents") in middleware._route_cache
+
+        # Second request served from cache produces the same decision
+        assert client.get("/documents").status_code == 200
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.GET.documents"
+
+    def test_parameterized_route_is_not_cached(self, topaz_config, patch_client):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/documents/{doc_id}")
+        def route(doc_id: int):
+            return {"id": doc_id}
+
+        client = TestClient(app)
+        assert client.get("/documents/123").status_code == 200
+
+        middleware = self._find_middleware(app)
+        assert ("GET", "/documents/123") not in middleware._route_cache
+
+        # Path params still reach the resource context on repeated requests
+        assert client.get("/documents/456").status_code == 200
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["resource_context"]["doc_id"] == "456"
+
+    def test_unmatched_path_is_not_cached(self, topaz_config, patch_client):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        client = TestClient(app)
+        assert client.get("/nope").status_code == 404
+
+        middleware = self._find_middleware(app)
+        assert ("GET", "/nope") not in middleware._route_cache

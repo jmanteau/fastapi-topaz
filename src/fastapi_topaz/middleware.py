@@ -139,18 +139,10 @@ class TopazMiddleware:
         # Pre-compile policy group patterns (avoid per-request re.compile)
         self._compiled_groups = _compile_policy_groups(config.policy_groups)
 
-        # Warn if multiple groups could match same common prefixes
-        for i, (p1, _) in enumerate(self._compiled_groups):
-            for j, (p2, _) in enumerate(self._compiled_groups):
-                if i < j:
-                    for test in ["/api/", "/admin/", "/api/v1/"]:
-                        if p1.match(test) and p2.match(test):
-                            logger.warning(
-                                "PolicyGroup patterns %r and %r both match %r — first wins",
-                                p1.pattern,
-                                p2.pattern,
-                                test,
-                            )
+        # Cache for static route matches: (method, path) -> (route, child_scope).
+        # Only routes without path params are cached — parameterized matches
+        # produce per-URL child scopes.
+        self._route_cache: dict[tuple[str, str], tuple[Any, dict]] = {}
 
         # Startup warnings for missing policy files
         if self._scanned_policies is not None:
@@ -168,15 +160,35 @@ class TopazMiddleware:
                         policies_dir,
                     )
 
+    # Cap the route cache so unbounded distinct static paths cannot grow it
+    # forever; when full, new entries are simply not cached.
+    _ROUTE_CACHE_MAX = 1024
+
     def _match_route(self, scope: Scope) -> tuple[Any, dict] | None:
-        """Manually match the route from the app's routes."""
+        """Manually match the route from the app's routes.
+
+        Static route matches (no path params) are cached per (method, path);
+        parameterized matches are recomputed because their child scope carries
+        per-URL path params. Unmatched paths are never cached (attacker-
+        controlled 404 paths would grow the cache unboundedly).
+        """
         app = scope.get("app")
         if not app or not hasattr(app, "routes"):
             return None
 
+        cache_key = (scope.get("method", "GET"), scope.get("path", "/"))
+        cached = self._route_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         for route in app.routes:
             match, child_scope = route.matches(scope)
             if match == Match.FULL:
+                if (
+                    not child_scope.get("path_params")
+                    and len(self._route_cache) < self._ROUTE_CACHE_MAX
+                ):
+                    self._route_cache[cache_key] = (route, child_scope)
                 return route, child_scope
         return None
 
@@ -346,6 +358,4 @@ class TopazMiddleware:
             await response(scope, receive, send)
             return
 
-        # Store path_params in scope for the handler
-        scope["path_params"] = path_params
         await self.app(scope, receive, send)

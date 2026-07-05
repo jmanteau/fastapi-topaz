@@ -176,11 +176,17 @@ app.add_middleware(
 )
 ```
 
+## Mounted Sub-Applications
+
+Mounted sub-apps (`app.mount("/sub", sub_app)`) match at the `Mount` itself, not at the routes inside the sub-app. The middleware therefore derives a prefix-only policy path (e.g. `myapp.GET.sub` for every request under `/sub/...`), losing the per-route granularity. If a sub-app needs per-route policies, add `TopazMiddleware` to the sub-app directly or protect its routes with dependencies.
+
 ## Performance
 
 Middleware adds minimal overhead:
 - Without cache: ~10-50ms (Topaz call)
 - With cache hit: ~0.1-1ms
+
+Route lookups for static paths (no path parameters) are cached internally per `(method, path)`, so repeated requests skip the route-matching scan. Parameterized routes are matched per request.
 
 Use `DecisionCache` for frequently accessed routes:
 
