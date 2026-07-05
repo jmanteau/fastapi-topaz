@@ -306,3 +306,33 @@ class TestResolveIdSource:
         request = _make_request()
         with pytest.raises(ValueError, match="callable"):
             _resolve_id_source(lambda r: "", request)
+
+
+class TestMutationValidation:
+    """policy_groups and default_policy are validated on assignment, not just in __init__."""
+
+    def test_policy_groups_setter_rejects_bad_regex(self):
+        from fastapi_topaz import PolicyGroup
+
+        config = _make_config()
+        with pytest.raises(ValueError, match="Invalid regex"):
+            config.policy_groups = [PolicyGroup("(?P<bad", "test.admin")]
+
+    def test_policy_groups_setter_converts_to_tuple(self):
+        from fastapi_topaz import PolicyGroup
+
+        config = _make_config()
+        config.policy_groups = [PolicyGroup(r"^/admin/", "test.admin")]
+        assert isinstance(config.policy_groups, tuple)
+        assert config.policy_groups[0].policy_path == "test.admin"
+
+    def test_default_policy_setter_rejects_empty_string(self):
+        config = _make_config()
+        with pytest.raises(ValueError, match="default_policy must be a non-empty string"):
+            config.default_policy = ""
+
+    def test_default_policy_setter_accepts_none_and_value(self):
+        config = _make_config(default_policy="test.defaults.open")
+        assert config.default_policy == "test.defaults.open"
+        config.default_policy = None
+        assert config.default_policy is None

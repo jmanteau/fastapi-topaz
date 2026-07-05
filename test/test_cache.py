@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from fastapi_topaz.cache import DecisionCache
+from fastapi_topaz.cache import DecisionCache, make_decision_key
 
 
 @pytest.mark.asyncio
@@ -104,3 +104,41 @@ class TestLRUEviction:
         # user1 should be evicted (oldest untouched), user0 should survive (was accessed)
         assert await cache.get("user1", "/admin", "allow", None) is None
         assert await cache.get("user0", "/admin", "allow", None) is True
+
+
+class TestMakeDecisionKey:
+    """Shared key helper used by DecisionCache and the config stale cache."""
+
+    def test_same_inputs_same_key(self):
+        a = make_decision_key("user1", "app.GET.docs", "allowed", {"id": "1"})
+        b = make_decision_key("user1", "app.GET.docs", "allowed", {"id": "1"})
+        assert a == b
+
+    def test_different_inputs_different_keys(self):
+        a = make_decision_key("user1", "app.GET.docs", "allowed", None)
+        b = make_decision_key("user2", "app.GET.docs", "allowed", None)
+        assert a != b
+
+    def test_nested_dict_ordering_insensitive(self):
+        ctx1 = {"outer": {"a": 1, "b": 2}, "id": "1"}
+        ctx2 = {"id": "1", "outer": {"b": 2, "a": 1}}
+        a = make_decision_key("user1", "app.GET.docs", "allowed", ctx1)
+        b = make_decision_key("user1", "app.GET.docs", "allowed", ctx2)
+        assert a == b
+
+    def test_stale_cache_key_uses_helper(self):
+        from aserto.client import AuthorizerOptions, Identity, IdentityType
+
+        from fastapi_topaz.config import TopazConfig
+
+        config = TopazConfig(
+            authorizer_options=AuthorizerOptions(url="localhost:8282"),
+            policy_path_root="test",
+            identity_provider=lambda r: Identity(
+                type=IdentityType.IDENTITY_TYPE_SUB, value="user-1"
+            ),
+            policy_instance_name="test",
+        )
+        assert config._make_stale_cache_key(
+            "user1", "app.GET.docs", "allowed", {"id": "1"}
+        ) == make_decision_key("user1", "app.GET.docs", "allowed", {"id": "1"})

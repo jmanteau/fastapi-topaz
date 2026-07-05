@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from fastapi import Request
 
 from ._client import SharedAuthorizerClient
 from ._policy import _resolve_policy_path
+from .cache import make_decision_key
 
 if TYPE_CHECKING:
     from .audit import AuditLogger
@@ -202,8 +202,8 @@ class TopazConfig:
         self.policy_instance_label = policy_instance_label or policy_instance_name
         self.resource_context_provider = resource_context_provider
         self.policy_path_normalizer = policy_path_normalizer
-        self.default_policy = default_policy
-        self.policy_groups = tuple(policy_groups or [])
+        self.default_policy = default_policy  # validated by the property setter
+        self.policy_groups = policy_groups or []  # validated by the property setter
         self.decision_cache = decision_cache
         self.max_concurrent_checks = max_concurrent_checks
         self.check_timeout = check_timeout
@@ -221,16 +221,6 @@ class TopazConfig:
         self._stale_cache: dict[str, tuple[bool, float]] = {}
         self._stale_cache_lock: asyncio.Lock | None = None
 
-        # Validate policy_groups regex patterns at config creation time
-        if self.policy_groups:
-            from ._policy import _compile_policy_groups
-
-            _compile_policy_groups(self.policy_groups)  # raises ValueError on bad regex
-
-        # Guard against empty string default_policy
-        if default_policy is not None and not default_policy:
-            raise ValueError("default_policy must be a non-empty string or None")
-
         # Configure connection pool with authorizer options
         if self.connection_pool:
             self.connection_pool.configure(authorizer_options)
@@ -246,6 +236,31 @@ class TopazConfig:
                 metrics.set_circuit_state(state_values.get(new_state, 0))
 
             self.circuit_breaker.on_state_change = _record_circuit_metrics
+
+    @property
+    def policy_groups(self) -> tuple[PolicyGroup, ...]:
+        """Policy groups, validated (regex compiled) on every assignment."""
+        return self._policy_groups
+
+    @policy_groups.setter
+    def policy_groups(self, value: list[PolicyGroup] | tuple[PolicyGroup, ...]) -> None:
+        groups = tuple(value or ())
+        if groups:
+            from ._policy import _compile_policy_groups
+
+            _compile_policy_groups(groups)  # raises ValueError on bad regex
+        self._policy_groups = groups
+
+    @property
+    def default_policy(self) -> str | None:
+        """Fallback policy path, validated (non-empty) on every assignment."""
+        return self._default_policy
+
+    @default_policy.setter
+    def default_policy(self, value: str | None) -> None:
+        if value is not None and not value:
+            raise ValueError("default_policy must be a non-empty string or None")
+        self._default_policy = value
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         """Lazily create the concurrency semaphore from within a running loop.
@@ -282,9 +297,7 @@ class TopazConfig:
         resource_context: ResourceContext | None,
     ) -> str:
         """Create a key for the stale cache."""
-        ctx_str = str(sorted(resource_context.items())) if resource_context else ""
-        key_data = f"{identity_value}:{policy_path}:{decision}:{ctx_str}"
-        return hashlib.sha256(key_data.encode()).hexdigest()[:32]
+        return make_decision_key(identity_value, policy_path, decision, resource_context)
 
     async def _get_stale_cached(
         self,

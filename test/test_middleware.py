@@ -690,26 +690,14 @@ class TestResolutionChain:
 class TestResolutionChainValidation:
     """Tests for resolution chain validation and warnings."""
 
-    def test_regex_validation_at_init(self, topaz_config):
-        """Invalid regex in PolicyGroup raises ValueError at middleware init."""
-        app = FastAPI()
-
+    def test_regex_validation_at_assignment(self, topaz_config):
+        """Invalid regex in PolicyGroup raises ValueError when assigned to the config."""
         invalid_group = PolicyGroup(
             url_pattern="(?P<invalid",  # Invalid regex
             policy_path="testapp.admin",
         )
-        topaz_config.policy_groups = [invalid_group]
-
-        # Validation happens when middleware is instantiated
-        try:
-            TopazMiddleware(
-                app=app,
-                config=topaz_config,
-            )
-            # If no exception here, it should fail during init
-            assert False, "Expected ValueError for invalid regex"
-        except ValueError as e:
-            assert "Invalid regex" in str(e)
+        with pytest.raises(ValueError, match="Invalid regex"):
+            topaz_config.policy_groups = [invalid_group]
 
     def test_startup_warns_missing_default_policy_file(
         self, topaz_config, patch_client, caplog, monkeypatch

@@ -6,12 +6,29 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from dataclasses import dataclass, field
 
 from aserto.client import ResourceContext
 
-__all__ = ["CacheEntry", "DecisionCache"]
+__all__ = ["CacheEntry", "DecisionCache", "make_decision_key"]
+
+
+def make_decision_key(
+    identity_value: str,
+    policy_path: str,
+    decision: str,
+    resource_context: ResourceContext | None,
+) -> str:
+    """Create a stable cache key from authorization parameters.
+
+    Nested dicts in the resource context are serialized with sorted keys so
+    logically identical contexts always produce the same key.
+    """
+    ctx_str = json.dumps(resource_context, sort_keys=True, default=str) if resource_context else ""
+    key_data = f"{identity_value}:{policy_path}:{decision}:{ctx_str}"
+    return hashlib.sha256(key_data.encode()).hexdigest()[:32]
 
 
 @dataclass
@@ -45,9 +62,7 @@ class DecisionCache:
         resource_context: ResourceContext | None,
     ) -> str:
         """Create a cache key from authorization parameters."""
-        ctx_str = str(sorted(resource_context.items())) if resource_context else ""
-        key_data = f"{identity_value}:{policy_path}:{decision}:{ctx_str}"
-        return hashlib.sha256(key_data.encode()).hexdigest()[:32]
+        return make_decision_key(identity_value, policy_path, decision, resource_context)
 
     async def get(
         self,
