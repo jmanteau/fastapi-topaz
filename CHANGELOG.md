@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Circuit breaker now detects gRPC errors (`grpc.RpcError`, including `grpc.aio.AioRpcError`) as failures based on their status code, so the breaker actually trips during Topaz outages; previously the default `failure_exceptions` never matched gRPC errors
 - Authorization checks now reuse a single long-lived gRPC channel instead of opening (and never closing) a new secure channel per request, eliminating a channel and file-descriptor leak
 - Middleware now logs authorization infrastructure errors with full tracebacks and emits an audit event with `reason="authorizer_error"` instead of silently converting every failure into a 403; identity-provider exceptions are logged instead of being swallowed
+- Cache hits now record the actual cached decision in metrics and tracing; previously every cache hit was labeled `decision="denied"` regardless of the cached value
+- Middleware authorization checks are now attributed to `source="middleware"` in metrics, cache counters, and tracing spans, matching the audit log; previously they were mislabeled as `source="dependency"`
+- `scan_routes` (and therefore `generate-policies`, `policy-diff`, and `generate-rights-matrix`) now applies the configured `policy_path_normalizer`, so generated policies match what the runtime evaluates instead of drifting on e.g. hyphenated paths
+- `policy_diff` no longer reports `default_policy` and `PolicyGroup` policy files as orphaned, so a correctly configured resolution chain passes `policy-diff --strict`
 
 ### Added
 
@@ -19,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TopazMiddleware(on_error=...)`: opt-in `"unavailable"` mode returns 503 instead of the fail-closed 403 default when the authorization check itself fails
 - `CircuitBreaker(failure_grpc_codes=...)`: set of gRPC status codes treated as failures (default: UNAVAILABLE, DEADLINE_EXCEEDED, UNKNOWN, INTERNAL, RESOURCE_EXHAUSTED); policy errors such as INVALID_ARGUMENT do not trip the breaker
 - `AuditLogger.log_decision(reason=...)`: optional reason field forwarded to the audit event
+- GitHub Actions CI workflow running lint, typecheck, and tests across Python 3.9-3.13 on pushes to main and pull requests
 
 ### Deprecated
 
