@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -75,6 +76,11 @@ class ConnectionPool:
     """
     Async connection pool for AuthorizerClient connections.
 
+    .. deprecated::
+        ConnectionPool is not used by the library's authorization path
+        (authorization checks use a single shared gRPC channel) and will be
+        removed in 2.0.
+
     Manages a pool of gRPC connections to Topaz, reusing them across
     requests to reduce connection overhead.
 
@@ -131,7 +137,16 @@ class ConnectionPool:
     _cleanup_task: asyncio.Task | None = field(default=None, init=False, repr=False)
 
     def configure(self, authorizer_options: AuthorizerOptions) -> None:
-        """Configure the pool with authorizer options."""
+        """Configure the pool with authorizer options.
+
+        .. deprecated:: Will be removed in 2.0; has no effect on authorization calls.
+        """
+        warnings.warn(
+            "ConnectionPool is deprecated and has no effect on authorization "
+            "calls; it will be removed in 2.0",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._authorizer_options = authorizer_options
         self._semaphore = asyncio.Semaphore(self.max_connections)
 
@@ -245,6 +260,10 @@ class ConnectionPool:
         else:
             # Remove unhealthy connection
             self._connections.discard(conn)
+            try:
+                await conn.client.close()
+            except Exception as e:
+                logger.warning(f"Error closing discarded connection: {e}")
             logger.debug("Discarded unhealthy connection")
 
         if self._semaphore:
@@ -297,6 +316,10 @@ class ConnectionPool:
         # Close stale connections
         for conn in to_close:
             self._connections.discard(conn)
+            try:
+                await conn.client.close()
+            except Exception as e:
+                logger.warning(f"Error closing idle connection: {e}")
             logger.debug(f"Closed idle connection, pool size: {len(self._connections)}")
 
     def status(self) -> PoolStatus:
@@ -333,7 +356,12 @@ class ConnectionPool:
             except asyncio.QueueEmpty:
                 break
 
-        # Clear all connections
+        # Close and clear all connections
+        for conn in list(self._connections):
+            try:
+                await conn.client.close()
+            except Exception as e:
+                logger.warning(f"Error closing pooled connection: {e}")
         self._connections.clear()
         self._busy.clear()
 

@@ -1,5 +1,8 @@
 # How to Configure Connection Pooling
 
+!!! warning "Deprecated"
+    `ConnectionPool` is deprecated and will be removed in 2.0. It has no effect on authorization calls: the library routes all authorization checks through a single shared gRPC channel, which already provides connection reuse. Configuring a pool only emits a `DeprecationWarning`.
+
 Efficient management of gRPC connections to Topaz for high-throughput applications.
 
 ## Basic Configuration
