@@ -11,6 +11,7 @@ Test organization:
 - TestPolicyMap: policy-map command for route documentation
 - TestMainCLI: Main entry point and argument parsing
 """
+
 from __future__ import annotations
 
 import sys
@@ -24,6 +25,7 @@ from fastapi import FastAPI
 
 from fastapi_topaz.cli import (
     cmd_generate_policies,
+    cmd_generate_rights_matrix,
     cmd_policy_diff,
     cmd_policy_map,
     import_app,
@@ -46,7 +48,7 @@ class MockArgs:
 
 
 # Sample FastAPI app code for dynamic import testing
-TEST_APP_CODE = '''
+TEST_APP_CODE = """
 from fastapi import FastAPI
 app = FastAPI()
 
@@ -61,7 +63,7 @@ def create_item():
 @app.get("/items/{id}")
 def get_item(id: int):
     return {}
-'''
+"""
 
 
 @pytest.fixture
@@ -167,6 +169,65 @@ class TestPolicyMap:
         assert "| /items |" in captured.out
 
 
+class TestGenerateRightsMatrix:
+    """generate-rights-matrix command: resolves every route through the chain."""
+
+    def test_summary_without_output(self, temp_app_module, capsys):
+        args = MockArgs(app=temp_app_module, root="testapp")
+        result = cmd_generate_rights_matrix(args)
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert "Rights matrix: 3 routes" in captured.out
+        assert "generated: 3" in captured.out
+        assert "Written to" not in captured.out
+
+    def test_writes_markdown_output(self, temp_app_module, capsys, tmp_path):
+        output_file = tmp_path / "matrix.md"
+        args = MockArgs(app=temp_app_module, root="testapp", output=str(output_file))
+        result = cmd_generate_rights_matrix(args)
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert f"Written to {output_file}" in captured.out
+
+        content = output_file.read_text()
+        assert "# Rights Matrix — testapp" in content
+        assert "| GET | /items | testapp.GET.items | generated | N |" in content
+        assert "Total routes: 3" in content
+
+    def test_explicit_policies_counted(self, temp_app_module, capsys, tmp_path):
+        policies_dir = tmp_path / "policies"
+        gen_args = MockArgs(app=temp_app_module, output=str(policies_dir), root="testapp")
+        cmd_generate_policies(gen_args)
+        capsys.readouterr()
+
+        args = MockArgs(app=temp_app_module, root="testapp", policies=str(policies_dir))
+        result = cmd_generate_rights_matrix(args)
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert "explicit: 3" in captured.out
+
+    def test_main_entry_point(self, temp_app_module, capsys):
+        with patch(
+            "sys.argv",
+            [
+                "fastapi-topaz",
+                "generate-rights-matrix",
+                "--app",
+                temp_app_module,
+                "--root",
+                "testapp",
+            ],
+        ):
+            result = main()
+            assert result == 0
+
+        captured = capsys.readouterr()
+        assert "Rights matrix: 3 routes" in captured.out
+
+
 class TestMainCLI:
     """Main CLI entry point and argument parsing."""
 
@@ -177,11 +238,18 @@ class TestMainCLI:
 
     def test_generate_command(self, temp_app_module):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("sys.argv", [
-                "fastapi-topaz", "generate-policies",
-                "--app", temp_app_module,
-                "--output", tmpdir,
-                "--root", "test",
-            ]):
+            with patch(
+                "sys.argv",
+                [
+                    "fastapi-topaz",
+                    "generate-policies",
+                    "--app",
+                    temp_app_module,
+                    "--output",
+                    tmpdir,
+                    "--root",
+                    "test",
+                ],
+            ):
                 result = main()
                 assert result == 0

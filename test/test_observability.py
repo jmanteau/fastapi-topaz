@@ -218,6 +218,166 @@ class TestOTelTracing:
         assert trace_id is None or isinstance(trace_id, str)
 
 
+@pytest.fixture
+def span_exporter():
+    """OTelTracing wired to an in-memory exporter, plus the exporter itself."""
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return provider, exporter
+
+
+def _make_tracing(provider, **kwargs):
+    tracing = OTelTracing(**kwargs)
+    tracing._tracer = provider.get_tracer("fastapi_topaz")
+    return tracing
+
+
+class TestOTelTracingSpans:
+    """Real span content verified with the OTel SDK in-memory exporter."""
+
+    def test_auth_span_attributes(self, span_exporter):
+        provider, exporter = span_exporter
+        tracing = _make_tracing(provider)
+
+        span = tracing.start_auth_span("middleware", "policy", "test.GET.docs", "user-1")
+        tracing.end_auth_span(span, decision="allowed", cached=True, latency_ms=12.5)
+
+        finished = exporter.get_finished_spans()
+        assert len(finished) == 1
+        exported = finished[0]
+        assert exported.name == "topaz.authorization"
+        attrs = dict(exported.attributes)
+        assert attrs["topaz.source"] == "middleware"
+        assert attrs["topaz.check_type"] == "policy"
+        assert attrs["topaz.decision"] == "allowed"
+        assert attrs["topaz.cached"] is True
+        assert attrs["topaz.latency_ms"] == 12.5
+        assert attrs["topaz.denied"] is False
+        # Privacy-sensitive attributes are off by default
+        assert "topaz.identity" not in attrs
+        assert "topaz.policy_path" not in attrs
+        assert "topaz.resource_context" not in attrs
+
+    def test_privacy_flags_add_attributes(self, span_exporter):
+        provider, exporter = span_exporter
+        tracing = _make_tracing(
+            provider,
+            include_identity=True,
+            include_policy_path=True,
+            include_resource_context=True,
+        )
+
+        span = tracing.start_auth_span("dependency", "rebac", "test.check", "user-1")
+        tracing.end_auth_span(
+            span,
+            decision="denied",
+            cached=False,
+            latency_ms=3.0,
+            resource_context={"object_id": "42"},
+        )
+
+        attrs = dict(exporter.get_finished_spans()[0].attributes)
+        assert attrs["topaz.identity"] == "user-1"
+        assert attrs["topaz.policy_path"] == "test.check"
+        assert attrs["topaz.resource_context"] == "{'object_id': '42'}"
+        assert attrs["topaz.denied"] is True
+
+    def test_trace_all_checks_false_disables_spans(self, span_exporter):
+        provider, exporter = span_exporter
+        tracing = _make_tracing(provider, trace_all_checks=False)
+
+        assert tracing.start_auth_span("middleware", "policy") is None
+        assert tracing.start_topaz_span() is None
+        assert exporter.get_finished_spans() == ()
+
+    def test_custom_span_name_prefix(self, span_exporter):
+        provider, exporter = span_exporter
+        tracing = _make_tracing(provider, span_name_prefix="myapp")
+
+        span = tracing.start_auth_span("manual", "policy")
+        tracing.end_auth_span(span, decision="allowed", cached=False, latency_ms=1.0)
+
+        exported = exporter.get_finished_spans()[0]
+        assert exported.name == "myapp.authorization"
+        assert dict(exported.attributes)["myapp.source"] == "manual"
+
+    def test_record_error_sets_error_status(self, span_exporter):
+        from opentelemetry.trace import StatusCode
+
+        provider, exporter = span_exporter
+        tracing = _make_tracing(provider)
+
+        span = tracing.start_auth_span("middleware", "policy")
+        tracing.record_error(span, ConnectionError("topaz down"))
+
+        exported = exporter.get_finished_spans()[0]
+        assert exported.status.status_code == StatusCode.ERROR
+        assert "topaz down" in exported.status.description
+        assert exported.events[0].name == "exception"
+
+    def test_cache_span_records_hit(self, span_exporter):
+        provider, exporter = span_exporter
+        tracing = _make_tracing(provider)
+
+        span = tracing.start_cache_span("lookup")
+        tracing.end_cache_span(span, hit=True)
+
+        exported = exporter.get_finished_spans()[0]
+        assert exported.name == "topaz.cache.lookup"
+        assert dict(exported.attributes)["hit"] is True
+
+    def test_cache_span_disabled(self, span_exporter):
+        provider, exporter = span_exporter
+        tracing = _make_tracing(provider, trace_cache_operations=False)
+
+        assert tracing.start_cache_span("lookup") is None
+        assert exporter.get_finished_spans() == ()
+
+    def test_topaz_span_records_latency(self, span_exporter):
+        provider, exporter = span_exporter
+        tracing = _make_tracing(provider)
+
+        span = tracing.start_topaz_span()
+        tracing.end_topaz_span(span, latency_ms=42.0)
+
+        exported = exporter.get_finished_spans()[0]
+        assert exported.name == "topaz.topaz.request"
+        assert dict(exported.attributes)["latency_ms"] == 42.0
+
+    def test_end_helpers_are_noops_for_none_span(self, span_exporter):
+        provider, exporter = span_exporter
+        tracing = _make_tracing(provider)
+
+        tracing.end_auth_span(None, decision="allowed", cached=False, latency_ms=1.0)
+        tracing.end_cache_span(None, hit=True)
+        tracing.end_topaz_span(None, latency_ms=1.0)
+        tracing.record_error(None, RuntimeError("x"))
+        assert exporter.get_finished_spans() == ()
+
+    def test_get_current_trace_id(self, span_exporter):
+        from opentelemetry import trace as otel_trace
+
+        provider, exporter = span_exporter
+        tracing = _make_tracing(provider)
+
+        assert tracing.get_current_trace_id() is None
+
+        tracer = provider.get_tracer("test")
+        with otel_trace.use_span(tracer.start_span("outer"), end_on_exit=True):
+            trace_id = tracing.get_current_trace_id()
+            assert isinstance(trace_id, str)
+            assert len(trace_id) == 32
+            assert trace_id != "0" * 32
+
+
 class TestOTelTracingIntegration:
     """Integration with TopazConfig - spans are created during authorization."""
 

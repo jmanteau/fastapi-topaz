@@ -132,6 +132,98 @@ class TestCheckDecisionUsesSharedClient:
         assert create_client_calls[0] == 0
 
 
+class TestDecisionsRpc:
+    """decisions() builds the IsRequest correctly and maps the response."""
+
+    def _make_client(self, **options_kwargs):
+        options = AuthorizerOptions(url="localhost:8282", **options_kwargs)
+        client = SharedAuthorizerClient(options)
+        stub = Mock()
+        stub.Is = AsyncMock()
+        client._stub = stub
+        return client, stub
+
+    def _make_response(self, decisions: dict[str, bool]):
+        response = Mock()
+        response.decisions = [
+            Mock(decision=name, **{"is": value}) for name, value in decisions.items()
+        ]
+        return response
+
+    @pytest.mark.asyncio
+    async def test_request_fields(self):
+        client, stub = self._make_client(tenant_id="tenant-1", api_key="key-1")
+        stub.Is.return_value = self._make_response({"allowed": True})
+
+        identity = Identity(type=IdentityType.IDENTITY_TYPE_SUB, value="user-1")
+        await client.decisions(
+            identity=identity,
+            policy_path="test.GET.docs",
+            decisions=("allowed", "visible"),
+            policy_instance_name="inst",
+            policy_instance_label="label",
+            resource_context={"object_id": "42"},
+            timeout=3.5,
+        )
+
+        stub.Is.assert_awaited_once()
+        request = stub.Is.call_args.args[0]
+        assert request.policy_context.path == "test.GET.docs"
+        assert list(request.policy_context.decisions) == ["allowed", "visible"]
+        assert request.identity_context.identity == "user-1"
+        assert request.identity_context.type == IdentityType.IDENTITY_TYPE_SUB
+        assert request.resource_context["object_id"] == "42"
+        assert request.policy_instance.name == "inst"
+        assert request.policy_instance.instance_label == "label"
+
+        kwargs = stub.Is.call_args.kwargs
+        assert kwargs["timeout"] == 3.5
+        assert ("aserto-tenant-id", "tenant-1") in kwargs["metadata"]
+        assert ("authorization", "basic key-1") in kwargs["metadata"]
+
+    @pytest.mark.asyncio
+    async def test_result_mapping(self):
+        client, stub = self._make_client()
+        stub.Is.return_value = self._make_response({"allowed": True, "visible": False})
+
+        result = await client.decisions(
+            identity=Identity(type=IdentityType.IDENTITY_TYPE_SUB, value="user-1"),
+            policy_path="test.GET.docs",
+            decisions=("allowed", "visible"),
+        )
+
+        assert result == {"allowed": True, "visible": False}
+
+    @pytest.mark.asyncio
+    async def test_none_identity_value_sent_as_empty_string(self):
+        client, stub = self._make_client()
+        stub.Is.return_value = self._make_response({"allowed": False})
+
+        await client.decisions(
+            identity=Identity(type=IdentityType.IDENTITY_TYPE_NONE),
+            policy_path="test.GET.docs",
+            decisions=("allowed",),
+        )
+
+        request = stub.Is.call_args.args[0]
+        assert request.identity_context.identity == ""
+
+    @pytest.mark.asyncio
+    async def test_empty_resource_context_serialized(self):
+        client, stub = self._make_client()
+        stub.Is.return_value = self._make_response({"allowed": True})
+
+        await client.decisions(
+            identity=Identity(type=IdentityType.IDENTITY_TYPE_SUB, value="user-1"),
+            policy_path="test.GET.docs",
+            decisions=("allowed",),
+            resource_context=None,
+        )
+
+        request = stub.Is.call_args.args[0]
+        assert dict(request.resource_context) == {}
+
+
 class TestInsecureChannel:
     """F2: first-class insecure (plaintext) channel option for local development."""
 
