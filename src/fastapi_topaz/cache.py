@@ -77,10 +77,17 @@ def make_decision_key(
 
 @dataclass
 class CacheEntry:
-    """A cached authorization decision with expiration."""
+    """A cached authorization decision with expiration.
+
+    Key components (identity, policy path, object ID) are stored alongside
+    the value so entries can be matched by :meth:`DecisionCache.invalidate`.
+    """
 
     value: bool
     expires_at: float
+    identity_value: str = ""
+    policy_path: str = ""
+    object_id: str | None = None
 
 
 @dataclass
@@ -153,10 +160,49 @@ class DecisionCache:
                     for k in to_remove:
                         del self._cache[k]
 
+            object_id = resource_context.get("object_id") if resource_context else None
             self._cache[key] = CacheEntry(
                 value=value,
                 expires_at=time.monotonic() + self.ttl_seconds,
+                identity_value=identity_value,
+                policy_path=policy_path,
+                object_id=str(object_id) if object_id is not None else None,
             )
+
+    async def invalidate(
+        self,
+        identity_value: str | None = None,
+        policy_path: str | None = None,
+        object_id: str | None = None,
+    ) -> int:
+        """Remove cached decisions matching all provided criteria (AND).
+
+        Args:
+            identity_value: Remove entries for this identity
+            policy_path: Remove entries for this policy path
+            object_id: Remove entries whose resource context had this object_id
+
+        Returns:
+            Number of entries removed.
+
+        Raises:
+            ValueError: If no criterion is provided (use :meth:`clear` to
+                remove everything).
+        """
+        if identity_value is None and policy_path is None and object_id is None:
+            raise ValueError("invalidate() requires at least one criterion; use clear() instead")
+
+        async with self._lock:
+            matching = [
+                key
+                for key, entry in self._cache.items()
+                if (identity_value is None or entry.identity_value == identity_value)
+                and (policy_path is None or entry.policy_path == policy_path)
+                and (object_id is None or entry.object_id == object_id)
+            ]
+            for key in matching:
+                del self._cache[key]
+            return len(matching)
 
     def size(self) -> int:
         """Current number of cached entries (may include expired ones)."""

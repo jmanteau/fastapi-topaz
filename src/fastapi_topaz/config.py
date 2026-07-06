@@ -355,6 +355,53 @@ class TopazConfig:
                 for k in sorted_keys[: max_stale_cache // 10]:
                     del self._stale_cache[k]
 
+    async def invalidate_cache(
+        self,
+        identity_value: str | None = None,
+        policy_path: str | None = None,
+        object_id: str | None = None,
+    ) -> int:
+        """Invalidate cached decisions matching all provided criteria (AND).
+
+        Use after permission changes (e.g. revoking a user's access) so cached
+        decisions do not keep serving stale grants until TTL expiry.
+
+        Delegates to ``decision_cache.invalidate(...)`` when the configured
+        backend implements it; backends without an ``invalidate`` method are
+        skipped. The stale fallback cache is always cleared entirely.
+
+        Args:
+            identity_value: Invalidate entries for this identity
+            policy_path: Invalidate entries for this policy path
+            object_id: Invalidate entries for this object ID
+
+        Returns:
+            Number of entries removed from the decision cache (0 when the
+            backend has no ``invalidate``).
+
+        Raises:
+            ValueError: If no criterion is provided.
+        """
+        if identity_value is None and policy_path is None and object_id is None:
+            raise ValueError("invalidate_cache() requires at least one criterion")
+
+        removed = 0
+        invalidate = getattr(self.decision_cache, "invalidate", None)
+        if invalidate is not None:
+            removed = await invalidate(
+                identity_value=identity_value,
+                policy_path=policy_path,
+                object_id=object_id,
+            )
+
+        # efficiency: stale-cache entries do not carry key components, so
+        # selective matching is impossible — clear it all; correctness of
+        # revocation beats fallback availability
+        async with self._get_stale_cache_lock():
+            self._stale_cache.clear()
+
+        return removed
+
     async def check_decision(
         self,
         request: Request,

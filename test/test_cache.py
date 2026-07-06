@@ -207,3 +207,108 @@ class TestCacheBackendProtocol:
         # Second call is served from the custom backend
         assert await config.check_decision(request, "test.GET.docs", "allowed") is True
         assert mock_authorizer.decisions.await_count == 1
+
+
+@pytest.mark.asyncio
+class TestCacheInvalidation:
+    """F5: selective decision invalidation."""
+
+    async def _populated_cache(self):
+        cache = DecisionCache(ttl_seconds=60)
+        await cache.set("alice", "app.GET.docs", "allowed", {"object_id": "1"}, True)
+        await cache.set("alice", "app.PUT.docs", "allowed", {"object_id": "2"}, True)
+        await cache.set("bob", "app.GET.docs", "allowed", {"object_id": "1"}, False)
+        await cache.set("bob", "app.check", "allowed", None, True)
+        return cache
+
+    async def test_invalidate_by_identity(self):
+        cache = await self._populated_cache()
+        removed = await cache.invalidate(identity_value="alice")
+        assert removed == 2
+        assert cache.size() == 2
+        assert await cache.get("alice", "app.GET.docs", "allowed", {"object_id": "1"}) is None
+        assert await cache.get("bob", "app.GET.docs", "allowed", {"object_id": "1"}) is False
+
+    async def test_invalidate_by_policy_path(self):
+        cache = await self._populated_cache()
+        removed = await cache.invalidate(policy_path="app.GET.docs")
+        assert removed == 2
+        assert await cache.get("alice", "app.PUT.docs", "allowed", {"object_id": "2"}) is True
+
+    async def test_invalidate_by_object_id(self):
+        cache = await self._populated_cache()
+        removed = await cache.invalidate(object_id="1")
+        assert removed == 2
+        assert await cache.get("bob", "app.check", "allowed", None) is True
+
+    async def test_invalidate_combined_criteria_are_anded(self):
+        cache = await self._populated_cache()
+        removed = await cache.invalidate(identity_value="alice", object_id="1")
+        assert removed == 1
+        assert await cache.get("alice", "app.PUT.docs", "allowed", {"object_id": "2"}) is True
+        assert await cache.get("bob", "app.GET.docs", "allowed", {"object_id": "1"}) is False
+
+    async def test_invalidate_no_match_returns_zero(self):
+        cache = await self._populated_cache()
+        assert await cache.invalidate(identity_value="carol") == 0
+        assert cache.size() == 4
+
+    async def test_invalidate_without_criteria_raises(self):
+        cache = await self._populated_cache()
+        with pytest.raises(ValueError):
+            await cache.invalidate()
+
+    async def test_entry_without_object_id_not_matched_by_object_id(self):
+        cache = await self._populated_cache()
+        removed = await cache.invalidate(identity_value="bob", object_id="1")
+        assert removed == 1
+        assert await cache.get("bob", "app.check", "allowed", None) is True
+
+
+@pytest.mark.asyncio
+class TestConfigInvalidateCache:
+    """F5: TopazConfig.invalidate_cache delegates and clears the stale cache."""
+
+    def _make_config(self, backend):
+        from aserto.client import AuthorizerOptions, Identity, IdentityType
+
+        from fastapi_topaz.config import TopazConfig
+
+        return TopazConfig(
+            authorizer_options=AuthorizerOptions(url="localhost:8282"),
+            policy_path_root="test",
+            identity_provider=lambda r: Identity(
+                type=IdentityType.IDENTITY_TYPE_SUB, value="user-1"
+            ),
+            policy_instance_name="test",
+            decision_cache=backend,
+        )
+
+    async def test_delegates_to_backend_and_clears_stale_cache(self):
+        cache = DecisionCache(ttl_seconds=60)
+        await cache.set("alice", "test.GET.docs", "allowed", None, True)
+        config = self._make_config(cache)
+        config._stale_cache["somekey"] = (True, 0.0)
+
+        removed = await config.invalidate_cache(identity_value="alice")
+
+        assert removed == 1
+        assert cache.size() == 0
+        assert config._stale_cache == {}
+
+    async def test_backend_without_invalidate_is_skipped(self):
+        backend = DictBackend()
+        await backend.set("alice", "test.GET.docs", "allowed", None, True)
+        config = self._make_config(backend)
+        config._stale_cache["somekey"] = (True, 0.0)
+
+        removed = await config.invalidate_cache(identity_value="alice")
+
+        assert removed == 0
+        assert backend.size() == 1  # backend untouched
+        assert config._stale_cache == {}
+
+    async def test_requires_criterion(self):
+        config = self._make_config(DecisionCache())
+        with pytest.raises(ValueError):
+            await config.invalidate_cache()
