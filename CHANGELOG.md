@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 2026-07-06: `CacheBackend` protocol: structural interface for pluggable decision cache backends (e.g. Redis); any object with `get`/`set`/`clear`/`size` can be passed as `TopazConfig(decision_cache=...)`; exported from the package root
+- 2026-07-06: `DecisionCache.invalidate(identity_value=..., policy_path=..., object_id=...)` and `TopazConfig.invalidate_cache(...)`: selective decision invalidation (AND of provided criteria) for permission changes; the stale fallback cache is always cleared entirely
+- 2026-07-06: `check_relations(..., batch=True)`: opt-in single-RPC evaluation of multiple relations against the `{root}.check` policy (one rule per relation name); per-relation caching, circuit-breaker fallback, metrics, and audit events preserved
+- 2026-07-06: `TopazConfig.health(ping=False)`: readiness helper returning circuit-breaker status, cache size, and an optional authorizer Info-RPC reachability probe (via new `SharedAuthorizerClient.info()`)
+- 2026-07-06: `annotate_openapi(app, config, policies_dir=None)`: stamps each route's resolved policy path into the OpenAPI schema as `x-authz-policy` / `x-authz-source` extensions; exported from the package root
+- 2026-07-06: `fastapi-topaz check --app ... --method GET --path /documents/1`: CLI command resolving which policy guards a concrete URL, with `--live` evaluation against the authorizer (exit 0 allowed / 1 denied / 2 error)
+- 2026-07-06: `TopazConfig(expose_deny_reason=True)`: structured 403 bodies including the evaluated policy path and check source (dev/debug only; leaks policy structure)
+- 2026-07-06: Test coverage for previously untested paths: `SharedAuthorizerClient.decisions()` request construction, OpenTelemetry span attributes/status (via `opentelemetry-sdk` in dev extras), and the `generate-rights-matrix` CLI command
 - `TopazConfig(insecure=...)`: first-class plaintext (non-TLS) gRPC channel option for local development, replacing ad-hoc monkey-patching
 - `fastapi_topaz.__version__` exposing the installed package version
 
