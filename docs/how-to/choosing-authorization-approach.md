@@ -185,6 +185,53 @@ async def get_document(id: int, request: Request):
 
 **Best for:** Fetching all permissions in one call, rich UI permission models.
 
+#### Batch mode
+
+By default, `check_relations()` issues one Topaz call per relation. Pass `batch=True` to evaluate all relations in a single call:
+
+```python
+permissions = await config.check_relations(
+    request,
+    object_type="document",
+    object_id=str(id),
+    relations=["can_read", "can_write", "can_delete"],
+    batch=True,
+)
+```
+
+Batch mode requires a Rego convention: the `{root}.check` package must define one rule per relation name, each reading `input.resource.object_type`, `input.resource.object_id`, and `input.resource.subject_type`. No `relation` key is sent in the resource context — the relation *is* the decision name:
+
+```rego
+package myapp.check
+
+import rego.v1
+
+default can_read = false
+default can_write = false
+
+can_read if {
+    ds.check({
+        "object_type": input.resource.object_type,
+        "object_id": input.resource.object_id,
+        "relation": "can_read",
+        "subject_type": input.resource.subject_type,
+        "subject_id": input.identity.value,
+    })
+}
+
+can_write if {
+    ds.check({
+        "object_type": input.resource.object_type,
+        "object_id": input.resource.object_id,
+        "relation": "can_write",
+        "subject_type": input.resource.subject_type,
+        "subject_id": input.identity.value,
+    })
+}
+```
+
+Caching, circuit breaker fallback, metrics, and audit events all apply per relation, exactly as in the default fan-out mode.
+
 ---
 
 ### TopazMiddleware

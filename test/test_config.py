@@ -336,3 +336,228 @@ class TestMutationValidation:
         assert config.default_policy == "test.defaults.open"
         config.default_policy = None
         assert config.default_policy is None
+
+
+@pytest.mark.asyncio
+class TestBatchedRelationChecks:
+    """F3: check_relations(batch=True) evaluates all relations in one RPC."""
+
+    def _mock_request(self):
+        request = Mock(spec=Request)
+        request.path_params = {}
+        return request
+
+    def _config_with_mock_wire(self, wire_results, **overrides):
+        config = _make_config(**overrides)
+        mock_authorizer = Mock()
+        mock_authorizer.decisions = AsyncMock(return_value=wire_results)
+        config._authorizer = mock_authorizer
+        return config, mock_authorizer
+
+    async def test_single_decisions_call_for_n_relations(self):
+        config, authorizer = self._config_with_mock_wire({"can_read": True, "can_write": False})
+
+        results = await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_write"],
+            batch=True,
+        )
+
+        assert results == {"can_read": True, "can_write": False}
+        authorizer.decisions.assert_awaited_once()
+        kwargs = authorizer.decisions.call_args.kwargs
+        assert kwargs["policy_path"] == "test.check"
+        assert kwargs["decisions"] == ("can_read", "can_write")
+        assert kwargs["resource_context"] == {
+            "object_type": "document",
+            "object_id": "42",
+            "subject_type": "user",
+        }
+        assert "relation" not in kwargs["resource_context"]
+        assert kwargs["timeout"] == 5.0
+
+    async def test_default_remains_fanout(self):
+        config, authorizer = self._config_with_mock_wire({"allowed": True})
+
+        await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_write"],
+        )
+
+        assert authorizer.decisions.await_count == 2
+
+    async def test_cache_hits_skip_the_wire(self):
+        cache = DecisionCache(ttl_seconds=60)
+        await cache.set(
+            "user-1",
+            "test.check",
+            "can_read",
+            {"object_type": "document", "object_id": "42", "subject_type": "user"},
+            True,
+        )
+        config, authorizer = self._config_with_mock_wire(
+            {"can_write": False}, decision_cache=cache
+        )
+
+        results = await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_write"],
+            batch=True,
+        )
+
+        assert results == {"can_read": True, "can_write": False}
+        authorizer.decisions.assert_awaited_once()
+        assert authorizer.decisions.call_args.kwargs["decisions"] == ("can_write",)
+
+    async def test_all_cached_makes_no_wire_call(self):
+        cache = DecisionCache(ttl_seconds=60)
+        ctx = {"object_type": "document", "object_id": "42", "subject_type": "user"}
+        await cache.set("user-1", "test.check", "can_read", ctx, True)
+        await cache.set("user-1", "test.check", "can_write", ctx, False)
+        config, authorizer = self._config_with_mock_wire({}, decision_cache=cache)
+
+        results = await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_write"],
+            batch=True,
+        )
+
+        assert results == {"can_read": True, "can_write": False}
+        authorizer.decisions.assert_not_awaited()
+
+    async def test_results_are_cached_individually(self):
+        cache = DecisionCache(ttl_seconds=60)
+        config, authorizer = self._config_with_mock_wire(
+            {"can_read": True, "can_write": False}, decision_cache=cache
+        )
+
+        await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_write"],
+            batch=True,
+        )
+        # Second batch is fully served from cache
+        await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_write"],
+            batch=True,
+        )
+
+        authorizer.decisions.assert_awaited_once()
+
+    async def test_missing_decision_in_response_defaults_to_denied(self):
+        config, _ = self._config_with_mock_wire({"can_read": True})
+
+        results = await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_delete"],
+            batch=True,
+        )
+
+        assert results == {"can_read": True, "can_delete": False}
+
+    async def test_breaker_open_uses_per_relation_fallback(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker, CircuitState
+
+        breaker = CircuitBreaker(failure_threshold=1, fallback="cache_then_deny")
+        config, authorizer = self._config_with_mock_wire({}, circuit_breaker=breaker)
+        breaker._state = CircuitState.OPEN
+        import time as _time
+
+        breaker._open_since = _time.monotonic()
+
+        # Stale cache has can_read=True; can_write falls back to deny
+        await config._set_stale_cached(
+            "user-1",
+            "test.check",
+            "can_read",
+            {"object_type": "document", "object_id": "42", "subject_type": "user"},
+            True,
+        )
+
+        results = await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_write"],
+            batch=True,
+        )
+
+        assert results == {"can_read": True, "can_write": False}
+        authorizer.decisions.assert_not_awaited()
+
+    async def test_wire_failure_uses_fallback_and_records_breaker_failure(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        breaker = CircuitBreaker(failure_threshold=10, fallback="cache_then_deny")
+        config = _make_config(circuit_breaker=breaker)
+        mock_authorizer = Mock()
+        mock_authorizer.decisions = AsyncMock(side_effect=ConnectionError("down"))
+        config._authorizer = mock_authorizer
+
+        results = await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read"],
+            batch=True,
+        )
+
+        assert results == {"can_read": False}
+        assert breaker._failure_count == 1
+
+    async def test_non_breaker_error_propagates(self):
+        config = _make_config()
+        mock_authorizer = Mock()
+        mock_authorizer.decisions = AsyncMock(side_effect=RuntimeError("boom"))
+        config._authorizer = mock_authorizer
+
+        with pytest.raises(RuntimeError):
+            await config.check_relations(
+                self._mock_request(),
+                object_type="document",
+                object_id="42",
+                relations=["can_read"],
+                batch=True,
+            )
+
+    async def test_batch_emits_one_audit_event_per_relation(self):
+        audit = Mock()
+        audit.log_decision = AsyncMock()
+        config, _ = self._config_with_mock_wire(
+            {"can_read": True, "can_write": False}, audit_logger=audit
+        )
+
+        await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_write"],
+            batch=True,
+        )
+
+        assert audit.log_decision.await_count == 2
+        allowed_values = sorted(
+            call.kwargs["allowed"] for call in audit.log_decision.await_args_list
+        )
+        assert allowed_values == [False, True]
+        # Batch context carries no "relation" key, so events are policy-type;
+        # the object info is still present in resource_context
+        assert all(
+            call.kwargs["resource_context"]["object_id"] == "42"
+            for call in audit.log_decision.await_args_list
+        )

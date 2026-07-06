@@ -402,6 +402,199 @@ class TopazConfig:
 
         return removed
 
+    async def _emit_audit_event(
+        self,
+        request: Request,
+        policy_path: str,
+        result: bool,
+        source: str,
+        cached: bool,
+        latency_ms: float,
+        resource_context: ResourceContext | None,
+        policy_resolution_source: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Emit one audit event for a decision (shared by single and batch paths)."""
+        if not self.audit_logger:
+            return
+        identity = self.identity_provider(request)
+        ctx = dict(resource_context) if resource_context else None
+        is_rebac = bool(ctx and ctx.get("object_type") and ctx.get("relation"))
+
+        def _ctx_str(key: str) -> str | None:
+            if not is_rebac or not ctx:
+                return None
+            value = ctx.get(key)
+            return str(value) if value is not None else None
+
+        await self.audit_logger.log_decision(
+            request=request,
+            policy_path=policy_path,
+            allowed=result,
+            source=source,
+            check_type="rebac" if is_rebac else "policy",
+            cached=cached,
+            latency_ms=latency_ms,
+            identity_type=identity.type.name  # type: ignore[union-attr]
+            if hasattr(identity.type, "name")
+            else str(identity.type),
+            identity_value=identity.value,
+            object_type=_ctx_str("object_type"),
+            object_id=_ctx_str("object_id"),
+            relation=_ctx_str("relation"),
+            subject_type=_ctx_str("subject_type"),
+            resource_context=ctx,
+            policy_resolution_source=policy_resolution_source,
+            reason=reason,
+        )
+
+    async def _check_decisions_batch(
+        self,
+        request: Request,
+        policy_path: str,
+        decisions: list[str],
+        resource_context: ResourceContext | None,
+        source: str = "manual",
+    ) -> dict[str, bool]:
+        """Check multiple decisions of one policy path in a single Topaz call.
+
+        Per-decision cache lookups run first; only misses go to the wire, in
+        one ``decisions`` RPC. Each result is cached, stale-cached, metered,
+        and audited individually, mirroring :meth:`check_decision`.
+        """
+        identity = self.identity_provider(request)
+        identity_value = identity.value or ""
+        start_time = time.monotonic()
+
+        results: dict[str, bool] = {}
+        cached_flags: dict[str, bool] = {}
+        misses: list[str] = []
+        reason: str | None = None
+
+        # Per-decision cache lookup
+        for decision in decisions:
+            cached = None
+            if self.decision_cache:
+                cached = await self.decision_cache.get(
+                    identity_value, policy_path, decision, resource_context
+                )
+            if cached is not None:
+                if self.metrics:
+                    self.metrics.record_cache_hit(source)
+                results[decision] = cached
+                cached_flags[decision] = True
+            else:
+                if self.decision_cache and self.metrics:
+                    self.metrics.record_cache_miss(source)
+                misses.append(decision)
+
+        if misses:
+            should_call = True
+            if self.circuit_breaker:
+                should_call = await self.circuit_breaker.should_allow_request()
+
+            if not should_call:
+                # Circuit open: per-decision fallback
+                reason = "authorizer_error"
+                for decision in misses:
+                    stale = await self._get_stale_cached(
+                        identity_value, policy_path, decision, resource_context
+                    )
+                    assert self.circuit_breaker is not None
+                    result = await self.circuit_breaker.get_fallback_decision(
+                        request,
+                        policy_path,
+                        dict(resource_context) if resource_context else {},
+                        stale,
+                        ConnectionError("Circuit breaker open"),
+                    )
+                    if self.metrics:
+                        self.metrics.record_fallback(
+                            "circuit_open", stale is not None, "allowed" if result else "denied"
+                        )
+                    results[decision] = result
+                    cached_flags[decision] = False
+            else:
+                try:
+                    topaz_start = time.monotonic()
+                    wire_results = await self._authorizer.decisions(
+                        identity=identity,
+                        policy_path=policy_path,
+                        decisions=tuple(misses),
+                        policy_instance_name=self.policy_instance_name,
+                        policy_instance_label=self.policy_instance_label,
+                        resource_context=resource_context,
+                        timeout=self.check_timeout,
+                    )
+                    if self.metrics:
+                        self.metrics.record_topaz_latency(time.monotonic() - topaz_start)
+                    if self.circuit_breaker:
+                        await self.circuit_breaker.record_success()
+
+                    for decision in misses:
+                        result = wire_results.get(decision, False)
+                        results[decision] = result
+                        cached_flags[decision] = False
+                        if self.decision_cache:
+                            await self.decision_cache.set(
+                                identity_value, policy_path, decision, resource_context, result
+                            )
+                        await self._set_stale_cached(
+                            identity_value, policy_path, decision, resource_context, result
+                        )
+                    if self.decision_cache and self.metrics:
+                        self.metrics.set_cache_size(self.decision_cache.size())
+                except Exception as e:
+                    if self.metrics:
+                        self.metrics.record_error(type(e).__name__)
+                    if not (self.circuit_breaker and self.circuit_breaker.is_failure_exception(e)):
+                        raise
+                    await self.circuit_breaker.record_failure(e)
+                    reason = "authorizer_error"
+                    for decision in misses:
+                        stale = await self._get_stale_cached(
+                            identity_value, policy_path, decision, resource_context
+                        )
+                        result = await self.circuit_breaker.get_fallback_decision(
+                            request,
+                            policy_path,
+                            dict(resource_context) if resource_context else {},
+                            stale,
+                            e,
+                        )
+                        if self.metrics:
+                            self.metrics.record_fallback(
+                                "error", stale is not None, "allowed" if result else "denied"
+                            )
+                        results[decision] = result
+                        cached_flags[decision] = False
+
+        latency_seconds = time.monotonic() - start_time
+        latency_ms = latency_seconds * 1000
+        for decision in decisions:
+            result = results[decision]
+            was_cached = cached_flags.get(decision, False)
+            if self.metrics:
+                self.metrics.record_auth_request(
+                    source=source,
+                    decision="allowed" if result else "denied",
+                    check_type="policy",
+                    policy_path=policy_path,
+                )
+                self.metrics.record_latency(latency_seconds, source, was_cached, policy_path)
+            await self._emit_audit_event(
+                request,
+                policy_path,
+                result,
+                source,
+                was_cached,
+                latency_ms,
+                resource_context,
+                reason=reason if not was_cached else None,
+            )
+
+        return results
+
     async def check_decision(
         self,
         request: Request,
@@ -602,36 +795,17 @@ class TopazConfig:
                 )
 
             # Audit logging — single emission point for all sources
-            if self.audit_logger:
-                ctx = dict(resource_context) if resource_context else None
-                is_rebac = bool(ctx and ctx.get("object_type") and ctx.get("relation"))
-
-                def _ctx_str(key: str) -> str | None:
-                    if not is_rebac or not ctx:
-                        return None
-                    value = ctx.get(key)
-                    return str(value) if value is not None else None
-
-                await self.audit_logger.log_decision(
-                    request=request,
-                    policy_path=policy_path,
-                    allowed=result,
-                    source=source,
-                    check_type="rebac" if is_rebac else "policy",
-                    cached=cached_result,
-                    latency_ms=latency_ms,
-                    identity_type=identity.type.name  # type: ignore[union-attr]
-                    if hasattr(identity.type, "name")
-                    else str(identity.type),
-                    identity_value=identity.value,
-                    object_type=_ctx_str("object_type"),
-                    object_id=_ctx_str("object_id"),
-                    relation=_ctx_str("relation"),
-                    subject_type=_ctx_str("subject_type"),
-                    resource_context=ctx,
-                    policy_resolution_source=policy_resolution_source,
-                    reason="authorizer_error" if check_error is not None else None,
-                )
+            await self._emit_audit_event(
+                request,
+                policy_path,
+                result,
+                source,
+                cached_result,
+                latency_ms,
+                resource_context,
+                policy_resolution_source=policy_resolution_source,
+                reason="authorizer_error" if check_error is not None else None,
+            )
 
     def policy_path_for(self, method: str, route_path: str) -> str:
         """
@@ -767,6 +941,7 @@ class TopazConfig:
         relations: list[str],
         subject_type: str = "user",
         source: str = "manual",
+        batch: bool = False,
     ) -> dict[str, bool]:
         """
         Check multiple ReBAC relations at once without raising exceptions.
@@ -782,6 +957,13 @@ class TopazConfig:
             object_id: ID of the object to check
             relations: List of relations to check (e.g., ["can_read", "can_write", "can_delete"])
             subject_type: Subject type (default: "user")
+            batch: Evaluate all relations in a single Topaz call instead of
+                one call per relation. Requires the ``{root}.check`` Rego
+                package to define one rule per relation name (e.g.
+                ``can_read``, ``can_write``) reading
+                ``input.resource.object_type`` / ``object_id`` /
+                ``subject_type`` — no ``relation`` key is sent. Default False
+                (per-relation fan-out, unchanged behaviour).
 
         Returns:
             Dict mapping relation names to boolean results
@@ -801,6 +983,24 @@ class TopazConfig:
                 return {"document": doc, "permissions": permissions}
             ```
         """
+        if batch:
+            resource_ctx: ResourceContext = {}
+            if self.resource_context_provider:
+                resource_ctx.update(self.resource_context_provider(request))
+            resource_ctx.update(
+                {
+                    "object_type": object_type,
+                    "object_id": object_id,
+                    "subject_type": subject_type,
+                }
+            )
+            return await self._check_decisions_batch(
+                request,
+                f"{self.policy_path_root}.check",
+                relations,
+                resource_ctx,
+                source=source,
+            )
 
         async def check_single_relation(rel: str) -> tuple[str, bool]:
             async with self._get_semaphore():
