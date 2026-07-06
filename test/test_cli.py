@@ -377,3 +377,88 @@ class TestCheckCommand:
 
         captured = capsys.readouterr()
         assert "Policy:   testapp.GET.items" in captured.out
+
+
+CONFIG_MODULE_CODE = '''
+from aserto.client import AuthorizerOptions, Identity, IdentityType
+from fastapi_topaz import PolicyGroup, TopazConfig
+
+config = TopazConfig(
+    authorizer_options=AuthorizerOptions(url="localhost:8282"),
+    policy_path_root="cfgapp",
+    identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_NONE, value=""),
+    policy_instance_name="cfgapp",
+    default_policy="cfgapp.defaults.open",
+    policy_groups=[PolicyGroup(url_pattern=r"^/items$", policy_path="cfgapp.items")],
+)
+'''
+
+
+@pytest.fixture
+def temp_config_module(tmp_path):
+    """Module exposing both an app and a TopazConfig with a resolution chain."""
+    module_dir = tmp_path / "cfgmod"
+    module_dir.mkdir()
+    (module_dir / "__init__.py").write_text("")
+    (module_dir / "main.py").write_text(TEST_APP_CODE + CONFIG_MODULE_CODE)
+
+    sys.path.insert(0, str(tmp_path))
+    yield "cfgmod.main"
+    sys.path.remove(str(tmp_path))
+
+
+class TestImportConfig:
+    """Dynamic TopazConfig importing from module:attribute strings."""
+
+    def test_import_valid_config(self, temp_config_module):
+        from fastapi_topaz.cli import import_config
+
+        config = import_config(f"{temp_config_module}:config")
+        assert config.policy_path_root == "cfgapp"
+
+    def test_import_invalid_config_exits(self):
+        from fastapi_topaz.cli import import_config
+
+        with pytest.raises(SystemExit):
+            import_config("nonexistent.module:config")
+
+    def test_command_uses_explicit_config(self, temp_config_module, capsys):
+        args = MockArgs(
+            app=f"{temp_config_module}:app",
+            config=f"{temp_config_module}:config",
+            path="/items",
+        )
+        result = cmd_check(args)
+        captured = capsys.readouterr()
+
+        assert result == 0
+        # /items matches the config's PolicyGroup
+        assert "cfgapp.items" in captured.out
+        assert "group" in captured.out
+
+
+class TestPolicyDiffVerboseOutput:
+    """policy-diff prints orphaned, group-covered, and default-covered sections."""
+
+    def test_group_default_and_orphan_sections(self, temp_config_module, capsys, tmp_path):
+        policies = tmp_path / "policies"
+        policies.mkdir()
+        (policies / "cfgapp.items.rego").write_text("package cfgapp.items\nallowed := false\n")
+        (policies / "cfgapp.defaults.open.rego").write_text(
+            "package cfgapp.defaults.open\nallowed := true\n"
+        )
+        (policies / "cfgapp.stray.rego").write_text("package cfgapp.stray\nallowed := false\n")
+
+        args = MockArgs(
+            app=f"{temp_config_module}:app",
+            config=f"{temp_config_module}:config",
+            policies=str(policies),
+        )
+        result = cmd_policy_diff(args)
+        captured = capsys.readouterr()
+
+        assert result == 0
+        assert "Orphaned policies (1)" in captured.out
+        assert "cfgapp.stray" in captured.out
+        assert "Covered by policy group" in captured.out
+        assert "Covered by default policy" in captured.out

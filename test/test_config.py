@@ -634,3 +634,222 @@ class TestHealth:
         assert result["ping"]["ok"] is False
         assert "ConnectionError" in result["ping"]["error"]
         assert "unreachable" in result["ping"]["error"]
+
+
+class TestCheckDecisionFallbackPaths:
+    """check_decision circuit-open and error-fallback branches with metrics
+    and on_fallback callbacks."""
+
+    def _mock_request(self):
+        request = Mock(spec=Request)
+        request.path_params = {}
+        return request
+
+    async def test_open_circuit_uses_fallback_and_records_metrics(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker, CircuitState
+
+        fallback_calls = []
+        breaker = CircuitBreaker(
+            failure_threshold=1,
+            fallback="cache_then_deny",
+            on_fallback=lambda req, path, stale, result: fallback_calls.append((path, result)),
+        )
+        metrics = Mock()
+        config = _make_config(circuit_breaker=breaker, metrics=metrics)
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(side_effect=AssertionError("no wire call"))
+
+        breaker._state = CircuitState.OPEN
+        breaker._open_since = asyncio.get_event_loop().time()
+
+        await config._set_stale_cached("user-1", "test.GET.docs", "allowed", None, True)
+
+        result = await config.check_decision(self._mock_request(), "test.GET.docs", "allowed")
+
+        assert result is True
+        config._authorizer.decisions.assert_not_awaited()
+        metrics.record_fallback.assert_called_once_with("circuit_open", True, "allowed")
+        assert fallback_calls == [("test.GET.docs", True)]
+
+    async def test_open_circuit_on_fallback_error_is_swallowed(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker, CircuitState
+
+        def boom(req, path, stale, result):
+            raise RuntimeError("callback bug")
+
+        breaker = CircuitBreaker(failure_threshold=1, fallback="deny", on_fallback=boom)
+        config = _make_config(circuit_breaker=breaker)
+        breaker._state = CircuitState.OPEN
+        breaker._open_since = asyncio.get_event_loop().time()
+
+        result = await config.check_decision(self._mock_request(), "test.GET.docs", "allowed")
+
+        assert result is False  # deny fallback, callback error swallowed
+
+    async def test_wire_error_uses_fallback_and_records_metrics(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        fallback_calls = []
+        breaker = CircuitBreaker(
+            failure_threshold=5,
+            fallback="cache_then_deny",
+            on_fallback=lambda req, path, stale, result: fallback_calls.append(result),
+        )
+        metrics = Mock()
+        config = _make_config(circuit_breaker=breaker, metrics=metrics)
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(side_effect=ConnectionError("down"))
+
+        result = await config.check_decision(self._mock_request(), "test.GET.docs", "allowed")
+
+        assert result is False  # no stale entry -> deny
+        metrics.record_error.assert_called_once_with("ConnectionError")
+        metrics.record_fallback.assert_called_once_with("error", False, "denied")
+        assert fallback_calls == [False]
+        assert breaker._failure_count == 1
+
+    async def test_wire_error_without_breaker_reraises(self):
+        metrics = Mock()
+        config = _make_config(metrics=metrics)
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(side_effect=ConnectionError("down"))
+
+        with pytest.raises(ConnectionError):
+            await config.check_decision(self._mock_request(), "test.GET.docs", "allowed")
+
+        metrics.record_error.assert_called_once_with("ConnectionError")
+
+    async def test_stale_cache_eviction_at_size_limit(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        breaker = CircuitBreaker()
+        config = _make_config(circuit_breaker=breaker)
+
+        for i in range(10001):
+            key = config._make_stale_cache_key(f"u{i}", "p", "allowed", None)
+            config._stale_cache[key] = (True, 0.0)
+
+        # One more insert through the API triggers the 10% eviction
+        await config._set_stale_cached("last-user", "p", "allowed", None, True)
+
+        assert len(config._stale_cache) <= 10002 - 1000
+
+
+class TestBatchMetricsAndBreaker:
+    """_check_decisions_batch metrics, breaker success, and error branches."""
+
+    def _mock_request(self):
+        request = Mock(spec=Request)
+        request.path_params = {}
+        return request
+
+    async def test_batch_records_metrics_per_decision(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        metrics = Mock()
+        cache = DecisionCache(ttl_seconds=60)
+        await cache.set(
+            "user-1",
+            "test.check",
+            "can_read",
+            {"object_type": "document", "object_id": "42", "subject_type": "user"},
+            True,
+        )
+        config = _make_config(
+            metrics=metrics, decision_cache=cache, circuit_breaker=CircuitBreaker()
+        )
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(return_value={"can_write": False})
+
+        results = await config.check_relations(
+            self._mock_request(),
+            object_type="document",
+            object_id="42",
+            relations=["can_read", "can_write"],
+            batch=True,
+        )
+
+        assert results == {"can_read": True, "can_write": False}
+        metrics.record_cache_hit.assert_called_once()
+        metrics.record_cache_miss.assert_called_once()
+        metrics.record_topaz_latency.assert_called_once()
+        metrics.set_cache_size.assert_called()
+        assert metrics.record_auth_request.call_count == 2
+        decisions = {
+            c.kwargs["decision"] for c in metrics.record_auth_request.call_args_list
+        }
+        assert decisions == {"allowed", "denied"}
+
+    async def test_batch_wire_error_records_error_metric(self):
+        metrics = Mock()
+        config = _make_config(metrics=metrics)
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(side_effect=ConnectionError("down"))
+
+        with pytest.raises(ConnectionError):
+            await config.check_relations(
+                self._mock_request(),
+                object_type="document",
+                object_id="42",
+                relations=["can_read"],
+                batch=True,
+            )
+
+        metrics.record_error.assert_called_once_with("ConnectionError")
+
+
+class TestConfigSmallGaps:
+    """Stale-cache TTL expiry, HierarchyResult.as_dict, and
+    resource_context_provider merging."""
+
+    def _mock_request(self):
+        request = Mock(spec=Request)
+        request.path_params = {}
+        return request
+
+    async def test_stale_cache_expired_entry_removed(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        breaker = CircuitBreaker(stale_cache_ttl=0.0)
+        config = _make_config(circuit_breaker=breaker)
+        await config._set_stale_cached("user-1", "p", "allowed", None, True)
+
+        assert await config._get_stale_cached("user-1", "p", "allowed", None) is None
+        assert config._stale_cache == {}
+
+    async def test_stale_cache_disabled_returns_none(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        breaker = CircuitBreaker(serve_stale_cache=False)
+        config = _make_config(circuit_breaker=breaker)
+        assert await config._get_stale_cached("user-1", "p", "allowed", None) is None
+
+    def test_hierarchy_result_as_dict(self):
+        from fastapi_topaz.config import HierarchyResult
+
+        result = HierarchyResult(
+            allowed=True, checks=[("document", "42", "can_read", True)]
+        )
+        assert result.as_dict() == {"document": True}
+
+    async def test_is_allowed_merges_resource_context_provider(self):
+        config = _make_config(resource_context_provider=lambda r: {"tenant": "acme"})
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(return_value={"allowed": True})
+
+        assert await config.is_allowed(self._mock_request(), "test.GET.docs") is True
+        ctx = config._authorizer.decisions.call_args.kwargs["resource_context"]
+        assert ctx["tenant"] == "acme"
+
+    async def test_check_relation_merges_resource_context_provider(self):
+        config = _make_config(resource_context_provider=lambda r: {"tenant": "acme"})
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(return_value={"allowed": True})
+
+        allowed = await config.check_relation(
+            self._mock_request(), object_type="document", object_id="42", relation="can_read"
+        )
+        assert allowed is True
+        ctx = config._authorizer.decisions.call_args.kwargs["resource_context"]
+        assert ctx["tenant"] == "acme"
+        assert ctx["object_type"] == "document"

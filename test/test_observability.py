@@ -504,3 +504,113 @@ class TestCombinedObservability:
         # Second request - cache hit
         response = client.get("/test")
         assert response.status_code == 200
+
+
+class TestPrometheusMetricsCoverage:
+    """Label branches, circuit counters, and degradation guards."""
+
+    def test_include_policy_path_adds_label(self):
+        prometheus_client = pytest.importorskip("prometheus_client")
+        registry = prometheus_client.CollectorRegistry()
+        metrics = PrometheusMetrics(
+            prefix="labeled_test", registry=registry, include_policy_path=True
+        )
+
+        metrics.record_auth_request("middleware", "allowed", "policy", policy_path="app.GET.docs")
+        metrics.record_latency(0.01, "middleware", False, policy_path="app.GET.docs")
+
+        assert (
+            registry.get_sample_value(
+                "labeled_test_auth_requests_total",
+                {
+                    "source": "middleware",
+                    "decision": "allowed",
+                    "check_type": "policy",
+                    "policy_path": "app.GET.docs",
+                },
+            )
+            == 1
+        )
+        assert (
+            registry.get_sample_value(
+                "labeled_test_auth_latency_seconds_count",
+                {"source": "middleware", "cached": "false", "policy_path": "app.GET.docs"},
+            )
+            == 1
+        )
+
+    def test_circuit_transition_fallback_and_error_counters(self):
+        prometheus_client = pytest.importorskip("prometheus_client")
+        registry = prometheus_client.CollectorRegistry()
+        metrics = PrometheusMetrics(prefix="circuit_test", registry=registry)
+
+        metrics.record_circuit_transition("closed", "open")
+        metrics.record_fallback("circuit_open", True, "allowed")
+        metrics.record_error("AioRpcError")
+        metrics.record_topaz_latency(0.02)
+        metrics.record_cache_miss("middleware")
+
+        assert (
+            registry.get_sample_value(
+                "circuit_test_circuit_transitions_total",
+                {"from_state": "closed", "to_state": "open"},
+            )
+            == 1
+        )
+        assert (
+            registry.get_sample_value(
+                "circuit_test_fallback_total",
+                {"strategy": "circuit_open", "cache_hit": "true", "decision": "allowed"},
+            )
+            == 1
+        )
+        assert (
+            registry.get_sample_value(
+                "circuit_test_errors_total", {"error_type": "AioRpcError"}
+            )
+            == 1
+        )
+        assert (
+            registry.get_sample_value(
+                "circuit_test_cache_misses_total", {"source": "middleware"}
+            )
+            == 1
+        )
+
+    def test_all_recorders_are_noops_when_prometheus_unavailable(self, monkeypatch):
+        """Every record method returns early when prometheus_client is absent."""
+        import fastapi_topaz.observability as obs
+
+        monkeypatch.setattr(obs, "PROMETHEUS_AVAILABLE", False)
+        metrics = PrometheusMetrics(prefix="noop_test")
+
+        metrics.record_auth_request("middleware", "allowed", "policy")
+        metrics.record_cache_hit("middleware")
+        metrics.record_cache_miss("middleware")
+        metrics.record_latency(0.01, "middleware", False)
+        metrics.record_topaz_latency(0.01)
+        metrics.record_error("X")
+        metrics.set_circuit_state(1)
+        metrics.record_circuit_transition("closed", "open")
+        metrics.record_fallback("circuit_open", False, "denied")
+        metrics.set_cache_size(1)
+
+        assert metrics._initialized is False
+
+
+class TestOTelTracingCoverage:
+    """Tracer/trace-id edge cases."""
+
+    def test_get_tracer_none_when_otel_unavailable(self, monkeypatch):
+        import fastapi_topaz.observability as obs
+
+        monkeypatch.setattr(obs, "OTEL_AVAILABLE", False)
+        tracing = OTelTracing()
+        assert tracing._get_tracer() is None
+        assert tracing.get_current_trace_id() is None
+
+    def test_trace_id_none_without_active_span(self):
+        pytest.importorskip("opentelemetry")
+        tracing = OTelTracing()
+        # No active span in this context: the invalid default span yields None
+        assert tracing.get_current_trace_id() is None
