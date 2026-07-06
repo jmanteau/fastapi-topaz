@@ -1112,3 +1112,54 @@ class TestRouteMatchCache:
 
         middleware = self._find_middleware(app)
         assert ("GET", "/nope") not in middleware._route_cache
+
+
+class TestExposeDenyReasonMiddleware:
+    """F9: expose_deny_reason=True produces a structured middleware deny body."""
+
+    @pytest.fixture
+    def verbose_config(self, authorizer_options, identity_provider):
+        return TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test-policy",
+            expose_deny_reason=True,
+        )
+
+    def test_structured_deny_body(self, verbose_config, patch_client_denied):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=verbose_config)
+
+        @app.get("/documents")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        response = client.get("/documents")
+
+        assert response.status_code == 403
+        assert response.json() == {
+            "detail": "Forbidden",
+            "policy": "testapp.GET.documents",
+            "source": "middleware",
+        }
+
+    def test_custom_on_denied_takes_precedence(self, verbose_config, patch_client_denied):
+        from starlette.responses import JSONResponse
+
+        def custom_denied(request, policy_path):
+            return JSONResponse(status_code=403, content={"custom": True})
+
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=verbose_config, on_denied=custom_denied)
+
+        @app.get("/documents")
+        def route():
+            return {"status": "ok"}
+
+        client = TestClient(app)
+        response = client.get("/documents")
+
+        assert response.status_code == 403
+        assert response.json() == {"custom": True}

@@ -127,6 +127,21 @@ grpc._channel._InactiveRpcError: <_InactiveRpcError of RPC that terminated with:
        --identity alice
    ```
 
+### Seeing Which Policy Denied a Request
+
+For development and debugging, `expose_deny_reason=True` makes 403 responses include the evaluated policy path and check source instead of a bare `"Forbidden"`:
+
+```python
+config = TopazConfig(
+    ...,
+    expose_deny_reason=True,  # dev/debug only
+)
+```
+
+Denied responses then carry a structured body — `{"detail": "Forbidden", "policy": "myapp.GET.documents", "source": "middleware"}` from the middleware or dependency paths, with `object_type` and `relation` added for ReBAC denials. A custom middleware `on_denied` callback still takes precedence.
+
+**Warning:** this leaks your policy structure to API clients. Never enable it in production.
+
 ### Policy Not Found
 
 **Symptoms:**

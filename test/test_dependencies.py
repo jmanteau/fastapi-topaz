@@ -2013,3 +2013,81 @@ class TestEmptyObjectIdFailsLoudly:
         assert response.status_code == 200
         call_kwargs = patch_client.decisions.call_args.kwargs
         assert call_kwargs["resource_context"]["object_id"] == "123"
+
+
+class TestExposeDenyReason:
+    """F9: expose_deny_reason=True produces structured 403 bodies."""
+
+    @pytest.fixture
+    def verbose_config(self, authorizer_options, identity_provider):
+        return TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test-policy",
+            expose_deny_reason=True,
+        )
+
+    def test_policy_dependency_structured_detail(self, verbose_config, patch_client_denied):
+        app = FastAPI()
+
+        @app.get(
+            "/documents",
+            dependencies=[
+                Depends(require_policy_allowed(verbose_config, "testapp.GET.documents"))
+            ],
+        )
+        def route():
+            return {}
+
+        client = TestClient(app)
+        response = client.get("/documents")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == {
+            "detail": "Forbidden",
+            "policy": "testapp.GET.documents",
+            "source": "dependency",
+        }
+
+    def test_rebac_dependency_structured_detail(self, verbose_config, patch_client_denied):
+        app = FastAPI()
+
+        @app.get(
+            "/documents/{id}",
+            dependencies=[
+                Depends(require_rebac_allowed(verbose_config, "document", "can_read"))
+            ],
+        )
+        def route(id: int):
+            return {}
+
+        client = TestClient(app)
+        response = client.get("/documents/1")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == {
+            "detail": "Forbidden",
+            "policy": "testapp.check",
+            "source": "rebac",
+            "object_type": "document",
+            "relation": "can_read",
+        }
+
+    def test_flag_off_stays_plain(self, topaz_config, patch_client_denied):
+        app = FastAPI()
+
+        @app.get(
+            "/documents",
+            dependencies=[
+                Depends(require_policy_allowed(topaz_config, "testapp.GET.documents"))
+            ],
+        )
+        def route():
+            return {}
+
+        client = TestClient(app)
+        response = client.get("/documents")
+
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Forbidden"}

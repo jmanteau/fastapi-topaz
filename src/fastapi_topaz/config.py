@@ -174,6 +174,9 @@ class TopazConfig:
         tracing: Optional OpenTelemetry tracing
         insecure: Use a plaintext (non-TLS) gRPC channel to the authorizer.
             Local development only — never enable against a production Topaz.
+        expose_deny_reason: Include the evaluated policy path and check source
+            in 403 response bodies. This leaks policy structure to clients —
+            enable for development and debugging only, never in production.
     """
 
     def __init__(
@@ -197,6 +200,7 @@ class TopazConfig:
         metrics: PrometheusMetrics | None = None,
         tracing: OTelTracing | None = None,
         insecure: bool = False,
+        expose_deny_reason: bool = False,
     ):
         self.authorizer_options = authorizer_options
         self.policy_path_root = policy_path_root
@@ -216,6 +220,7 @@ class TopazConfig:
         self.metrics = metrics
         self.tracing = tracing
         self.insecure = insecure
+        self.expose_deny_reason = expose_deny_reason
         self._authorizer = SharedAuthorizerClient(authorizer_options, insecure=insecure)
         # asyncio primitives are created lazily on first use: on Python 3.9
         # they bind the event loop active at creation time, and configs are

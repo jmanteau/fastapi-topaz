@@ -337,6 +337,10 @@ class TopazMiddleware:
             check_error = e
             allowed = False
 
+        deny_body: dict = {"detail": "Forbidden"}
+        if self.config.expose_deny_reason:
+            deny_body = {"detail": "Forbidden", "policy": policy_path, "source": "middleware"}
+
         if check_error is not None:
             if self.on_error == "unavailable":
                 response = JSONResponse(
@@ -346,7 +350,7 @@ class TopazMiddleware:
             elif self.on_denied:
                 response = self.on_denied(request, policy_path)
             else:
-                response = JSONResponse(status_code=403, content={"detail": "Forbidden"})
+                response = JSONResponse(status_code=403, content=deny_body)
             await response(scope, receive, send)
             return
 
@@ -354,7 +358,7 @@ class TopazMiddleware:
             if self.on_denied:
                 response = self.on_denied(request, policy_path)
             else:
-                response = JSONResponse(status_code=403, content={"detail": "Forbidden"})
+                response = JSONResponse(status_code=403, content=deny_body)
             await response(scope, receive, send)
             return
 

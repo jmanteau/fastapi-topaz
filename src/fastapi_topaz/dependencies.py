@@ -47,20 +47,32 @@ async def _check_policy_and_raise(
 
     if not allowed:
         logger.debug(f"Access DENIED: path={policy_path}, identity={identity.value}, context={ctx}")
+        detail: str | dict = "Forbidden"
+        if config.expose_deny_reason:
+            detail = {"detail": "Forbidden", "policy": policy_path, "source": "dependency"}
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden",
+            detail=detail,
         )
 
     logger.debug(f"Access GRANTED: path={policy_path}, identity={identity.value}")
 
 
-def _raise_rebac_denied(relation: str, object_type: str, obj_id: str) -> None:
+def _raise_rebac_denied(config: TopazConfig, relation: str, object_type: str, obj_id: str) -> None:
     """Log the denied ReBAC check at DEBUG and raise a generic 403."""
     logger.debug(f"ReBAC access DENIED: {relation} on {object_type}:{obj_id}")
+    detail: str | dict = "Forbidden"
+    if config.expose_deny_reason:
+        detail = {
+            "detail": "Forbidden",
+            "policy": f"{config.policy_path_root}.check",
+            "source": "rebac",
+            "object_type": object_type,
+            "relation": relation,
+        }
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="Forbidden",
+        detail=detail,
     )
 
 
@@ -244,7 +256,7 @@ def require_rebac_allowed(
         allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
 
         if not allowed:
-            _raise_rebac_denied(relation, object_type, obj_id)
+            _raise_rebac_denied(config, relation, object_type, obj_id)
 
     return dependency
 
@@ -322,7 +334,7 @@ def get_authorized_resource(
         allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
 
         if not allowed:
-            _raise_rebac_denied(relation, object_type, obj_id)
+            _raise_rebac_denied(config, relation, object_type, obj_id)
 
         return resource
 
