@@ -162,9 +162,18 @@ class AuditLogger:
         level_denied: Log level for denied events
         level_unauthenticated: Log level for 401 events
         level_skipped: Log level for skipped events
-        include_resource_context: Include resource context in logs
+        include_resource_context: Include resource context in logs. Off by
+            default: resource context often carries user data (emails, names,
+            document attributes) that should not land in logs unreviewed.
         include_request_headers: Include HTTP headers (privacy concern)
         handler: Custom async handler for events
+
+    Note:
+        The client IP recorded in events is taken from the ``x-forwarded-for``
+        / ``x-real-ip`` headers when present, which are client-spoofable
+        unless a trusted reverse proxy strips or sets them. Do not treat the
+        audit ``client_ip`` as authenticated for forensics unless your
+        deployment guarantees those headers.
     """
 
     log_allowed: bool = True
@@ -178,7 +187,7 @@ class AuditLogger:
     level_unauthenticated: str = "WARNING"
     level_skipped: str = "DEBUG"
 
-    include_resource_context: bool = True
+    include_resource_context: bool = False
     include_request_headers: bool = False
 
     handler: AuditHandler | None = None

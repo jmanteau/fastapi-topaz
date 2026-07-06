@@ -1,9 +1,9 @@
 """Shared policy path utilities used by dependencies and codegen."""
+
 from __future__ import annotations
 
 import logging
 import re
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -78,8 +78,8 @@ def _compile_policy_groups(
 ) -> list[tuple[re.Pattern[str], str]]:
     """Pre-compile PolicyGroup regex patterns.
 
-    Raises :class:`ValueError` on invalid regex or patterns that exhibit
-    ReDoS-like behaviour against a pathological input.
+    Raises :class:`ValueError` on invalid regex. Patterns come from the app
+    developer (trusted), so no ReDoS heuristics are applied.
     """
     compiled: list[tuple[re.Pattern[str], str]] = []
     for group in groups:
@@ -89,16 +89,6 @@ def _compile_policy_groups(
             raise ValueError(
                 f"Invalid regex in PolicyGroup url_pattern {group.url_pattern!r}: {e}"
             ) from e
-
-        # Heuristic ReDoS check: test pattern against pathological input
-        test_input = "/a" * 200
-        start = time.perf_counter()
-        pattern.match(test_input)
-        if time.perf_counter() - start > 0.1:
-            raise ValueError(
-                f"PolicyGroup url_pattern {group.url_pattern!r} may be vulnerable to ReDoS"
-            )
-
         compiled.append((pattern, group.policy_path))
     return compiled
 

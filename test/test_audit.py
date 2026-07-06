@@ -411,3 +411,32 @@ class TestD5AuditKnobs:
 
         assert events[0].request_headers is None
         assert "headers" not in events[0].to_dict().get("request", {})
+
+
+class TestResourceContextInclusion:
+    """Resource context is opt-in: it may carry user data (emails, document
+    attributes) that should not land in logs unreviewed."""
+
+    @pytest.mark.asyncio
+    async def test_resource_context_absent_by_default(self):
+        events = []
+
+        logger = AuditLogger(handler=events.append)
+        await logger.log_decision(
+            None, "myapp.GET.test", True, resource_context={"owner_email": "a@b.c"}
+        )
+
+        assert events[0].resource_context is None
+        assert "resource_context" not in events[0].to_dict()
+
+    @pytest.mark.asyncio
+    async def test_resource_context_included_when_opted_in(self):
+        events = []
+
+        logger = AuditLogger(handler=events.append, include_resource_context=True)
+        await logger.log_decision(
+            None, "myapp.GET.test", True, resource_context={"owner_email": "a@b.c"}
+        )
+
+        assert events[0].resource_context == {"owner_email": "a@b.c"}
+        assert events[0].to_dict()["resource_context"] == {"owner_email": "a@b.c"}

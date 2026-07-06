@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `policy_groups` and `default_policy` are validated on every assignment, not only at construction
 - Decision-cache and stale-cache keys use a shared helper with JSON-based context serialization stable across nested-dict key ordering
 - Audit events are now emitted from `check_decision` for all sources (middleware, dependency, manual), so dependency and manual checks are audited too; previously only the middleware emitted decision events
+- `AuditLogger(include_resource_context=...)` now defaults to `False`: resource context often carries user data (emails, names, document attributes) that should not land in logs unreviewed; set it to `True` explicitly to restore the previous behavior
+- Documented that the audit `client_ip` field trusts `x-forwarded-for` / `x-real-ip` headers, which are client-spoofable without a trusted reverse proxy
 
 ### Deprecated
 
@@ -51,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dead no-op fixture stubs in `fastapi_topaz.testing` (`pytest_configure`, `mock_topaz_config_fixture`, `allow_all_auth_fixture`, `deny_all_auth_fixture`)
 - Ineffective PolicyGroup overlap warning that only probed hardcoded prefixes
+- Wall-clock ReDoS probe in `PolicyGroup` pattern compilation: it was flaky under CI jitter and patterns come from the app developer (trusted); plain regex-validity checking remains
 
 ### Fixed
 

@@ -19,7 +19,7 @@ config = TopazConfig(
         log_skipped=False,
         log_unauthenticated=True,
         log_manual_checks=False,
-        include_resource_context=True,
+        include_resource_context=True,  # off by default: may contain user data
     ),
 )
 ```
@@ -133,9 +133,13 @@ ORDER BY denied_count DESC
 | log_skipped | bool | False | Log excluded routes as `authorization.middleware.skipped` events |
 | log_unauthenticated | bool | True | Log 401 events |
 | log_manual_checks | bool | False | Log is_allowed() calls |
-| include_resource_context | bool | True | Include resource details |
+| include_resource_context | bool | False | Include resource details; resource context often carries user data (emails, names, document attributes), so review what your providers put in it before enabling |
 | include_request_headers | bool | False | Include HTTP request headers in events; `authorization` and `cookie` values are redacted |
 | handler | Callable | None | Custom async handler |
+
+## Client IP Caveat
+
+The `client_ip` field in audit events is taken from the `x-forwarded-for` / `x-real-ip` headers when present, falling back to the socket peer address. These headers are client-spoofable unless a trusted reverse proxy in front of your app strips or overwrites them. Do not treat `client_ip` as authenticated for forensics unless your deployment guarantees those headers.
 
 ## See Also
 
