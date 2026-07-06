@@ -184,6 +184,19 @@ print(f"Missing: {diff.missing}")
 print(f"Orphaned: {diff.orphaned}")
 ```
 
+### OpenAPI Annotation
+
+`annotate_openapi()` stamps each route's resolved policy path into the OpenAPI schema as `x-authz-policy` / `x-authz-source` extensions, so API consumers and reviewers can see which policy guards each operation. Call it after route registration and before the first `app.openapi()` access (the schema is cached on first build):
+
+```python
+from fastapi_topaz import annotate_openapi
+
+count = annotate_openapi(app, config, policies_dir="policies/")
+print(f"Annotated {count} routes")
+```
+
+Resolution follows the same chain as the rights matrix: explicit `.rego` file (when `policies_dir` is given) > policy group > default policy > generated path. Existing `openapi_extra` values on routes are preserved.
+
 ## See Also
 
 - [CLI Reference](../reference/cli.md) - Complete CLI documentation

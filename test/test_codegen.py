@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from fastapi_topaz import PolicyGroup, TopazConfig, normalize_hyphens
 from fastapi_topaz.codegen import (
     PolicyTemplate,
+    annotate_openapi,
     generate_policies,
     generate_rights_matrix,
     policy_diff,
@@ -378,3 +379,65 @@ class TestGenerateRightsMatrix:
             # Should have data rows
             assert "GET" in content
             assert "documents" in content
+
+
+class TestAnnotateOpenapi:
+    """annotate_openapi() writes x-authz-policy extensions into the schema."""
+
+    def test_annotations_appear_in_openapi_schema(self, sample_app, config):
+        count = annotate_openapi(sample_app, config)
+        assert count == 5
+
+        schema = sample_app.openapi()
+        get_docs = schema["paths"]["/documents"]["get"]
+        assert get_docs["x-authz-policy"] == "myapp.GET.documents"
+        assert get_docs["x-authz-source"] == "generated"
+        get_doc = schema["paths"]["/documents/{id}"]["get"]
+        assert get_doc["x-authz-policy"] == "myapp.GET.documents.__id"
+
+    def test_resolution_sources(self, sample_app, config):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            explicit_path = Path(tmpdir) / "myapp/GET/documents.rego"
+            explicit_path.parent.mkdir(parents=True, exist_ok=True)
+            explicit_path.write_text("package myapp.GET.documents\n")
+
+            config.policy_groups = [
+                PolicyGroup(url_pattern=r"^/documents/\{id\}$", policy_path="myapp.admin")
+            ]
+            config.default_policy = "myapp.defaults.open"
+
+            annotate_openapi(sample_app, config, policies_dir=tmpdir)
+
+            schema = sample_app.openapi()
+            get_docs = schema["paths"]["/documents"]["get"]
+            assert get_docs["x-authz-policy"] == "myapp.GET.documents"
+            assert get_docs["x-authz-source"] == "explicit"
+
+            get_doc = schema["paths"]["/documents/{id}"]["get"]
+            assert get_doc["x-authz-policy"] == "myapp.admin"
+            assert get_doc["x-authz-source"] == "group"
+
+            post_docs = schema["paths"]["/documents"]["post"]
+            assert post_docs["x-authz-policy"] == "myapp.defaults.open"
+            assert post_docs["x-authz-source"] == "default"
+
+    def test_existing_openapi_extra_preserved(self, config):
+        app = FastAPI()
+
+        @app.get("/items", openapi_extra={"x-custom": "kept"})
+        def list_items():
+            return []
+
+        count = annotate_openapi(app, config)
+        assert count == 1
+
+        schema = app.openapi()
+        operation = schema["paths"]["/items"]["get"]
+        assert operation["x-custom"] == "kept"
+        assert operation["x-authz-policy"] == "myapp.GET.items"
+
+    def test_excluded_routes_not_annotated(self, sample_app, config):
+        annotate_openapi(sample_app, config)
+        for route in sample_app.routes:
+            if getattr(route, "path", None) == "/openapi.json":
+                assert getattr(route, "openapi_extra", None) is None

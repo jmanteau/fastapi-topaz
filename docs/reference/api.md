@@ -241,6 +241,16 @@ Complete reference for all fastapi-topaz public exports.
 
 ---
 
+## Policy Generation
+
+### annotate_openapi
+
+::: fastapi_topaz.annotate_openapi
+    options:
+      show_root_heading: false
+
+---
+
 ## Re-exported Types
 
 These types are re-exported from `aserto.client` for convenience:

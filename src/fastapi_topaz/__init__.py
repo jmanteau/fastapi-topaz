@@ -13,6 +13,7 @@ from ._policy import normalize_hyphens
 from .audit import AuditEvent, AuditLogger
 from .cache import CacheBackend, DecisionCache
 from .circuit_breaker import CircuitBreaker, CircuitState, CircuitStatus
+from .codegen import annotate_openapi
 from .config import HierarchyResult, PolicyGroup, TopazConfig
 from .connection_pool import ConnectionPool, PoolStatus
 from .dependencies import (
@@ -62,6 +63,7 @@ __all__ = [
     "TopazConfig",
     "AuthorizationError",
     # Policy utilities
+    "annotate_openapi",
     "normalize_hyphens",
     # Aserto client re-exports
     "AuthorizerOptions",

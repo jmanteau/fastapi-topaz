@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from .dependencies import TopazConfig
 
 __all__ = [
+    "annotate_openapi",
     "generate_policies",
     "generate_rights_matrix",
     "policy_diff",
@@ -448,6 +449,56 @@ def generate_rights_matrix(
         )
 
     return results
+
+
+def annotate_openapi(
+    app: FastAPI,
+    config: TopazConfig,
+    policies_dir: str | Path | None = None,
+) -> int:
+    """
+    Annotate FastAPI routes with their resolved Topaz policy paths in OpenAPI.
+
+    Walks ``app.routes`` and resolves each route through the same policy
+    resolution chain as :func:`generate_rights_matrix` (explicit file when
+    *policies_dir* is given > policy group > default policy > generated),
+    then merges ``x-authz-policy`` and ``x-authz-source`` into each route's
+    ``openapi_extra``. Existing ``openapi_extra`` keys are preserved.
+
+    Call after route registration and before the first schema build (the
+    schema is cached on first access to ``app.openapi()``).
+
+    Args:
+        app: FastAPI application instance
+        config: TopazConfig with policy_path_root (and optional
+            default_policy / policy_groups)
+        policies_dir: Directory containing ``.rego`` policy files (optional,
+            enables the explicit tier)
+
+    Returns:
+        Number of routes annotated.
+    """
+    resolutions = generate_rights_matrix(app, config, policies_dir=policies_dir)
+    by_method_path = {(r.method, r.route_pattern): r for r in resolutions}
+
+    annotated = 0
+    for route in app.routes:
+        if not hasattr(route, "methods") or not hasattr(route, "path"):
+            continue
+        api_route = cast("APIRoute", route)
+        for method in api_route.methods or []:
+            resolution = by_method_path.get((method, api_route.path))
+            if resolution is None:
+                continue
+            api_route.openapi_extra = {
+                **(api_route.openapi_extra or {}),
+                "x-authz-policy": resolution.resolved_policy_path,
+                "x-authz-source": resolution.resolution_source,
+            }
+            annotated += 1
+            break  # one annotation per route object
+
+    return annotated
 
 
 def _write_rights_matrix_markdown(
