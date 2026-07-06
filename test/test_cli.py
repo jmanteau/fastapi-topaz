@@ -24,6 +24,7 @@ import pytest
 from fastapi import FastAPI
 
 from fastapi_topaz.cli import (
+    cmd_check,
     cmd_generate_policies,
     cmd_generate_rights_matrix,
     cmd_policy_diff,
@@ -45,6 +46,10 @@ class MockArgs:
     policies: str | None = None
     strict: bool = False
     format: str = "text"
+    method: str = "GET"
+    path: str = "/"
+    live: bool = False
+    identity: str | None = None
 
 
 # Sample FastAPI app code for dynamic import testing
@@ -253,3 +258,122 @@ class TestMainCLI:
             ):
                 result = main()
                 assert result == 0
+
+
+class TestCheckCommand:
+    """check command: resolves the policy for a concrete method + URL."""
+
+    def test_offline_generated_resolution(self, temp_app_module, capsys):
+        args = MockArgs(app=temp_app_module, root="testapp", method="GET", path="/items/7")
+        result = cmd_check(args)
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert "Route:    GET /items/{id}" in captured.out
+        assert "Policy:   testapp.GET.items.__id" in captured.out
+        assert "Source:   generated" in captured.out
+        assert "'id': '7'" in captured.out
+
+    def test_offline_explicit_resolution(self, temp_app_module, capsys, tmp_path):
+        policies_dir = tmp_path / "policies"
+        gen_args = MockArgs(app=temp_app_module, output=str(policies_dir), root="testapp")
+        cmd_generate_policies(gen_args)
+        capsys.readouterr()
+
+        args = MockArgs(
+            app=temp_app_module,
+            root="testapp",
+            method="GET",
+            path="/items",
+            policies=str(policies_dir),
+        )
+        result = cmd_check(args)
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert "Policy:   testapp.GET.items" in captured.out
+        assert "Source:   explicit" in captured.out
+
+    def test_unmatched_route_errors(self, temp_app_module, capsys):
+        args = MockArgs(app=temp_app_module, root="testapp", method="GET", path="/nonexistent")
+        result = cmd_check(args)
+        assert result == 2
+
+        captured = capsys.readouterr()
+        assert "no route matches GET /nonexistent" in captured.out
+
+    def test_live_allowed(self, temp_app_module, capsys):
+        from unittest.mock import AsyncMock
+
+        args = MockArgs(
+            app=temp_app_module,
+            root="testapp",
+            method="GET",
+            path="/items/7",
+            live=True,
+            identity="user-1",
+        )
+        with patch(
+            "fastapi_topaz._client.SharedAuthorizerClient.decisions",
+            new=AsyncMock(return_value={"allowed": True}),
+        ) as mock_decisions:
+            result = cmd_check(args)
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert "Decision: allowed" in captured.out
+        kwargs = mock_decisions.call_args.kwargs
+        assert kwargs["policy_path"] == "testapp.GET.items.__id"
+        assert kwargs["identity"].value == "user-1"
+        assert kwargs["resource_context"] == {"id": "7"}
+
+    def test_live_denied(self, temp_app_module, capsys):
+        from unittest.mock import AsyncMock
+
+        args = MockArgs(app=temp_app_module, root="testapp", method="GET", path="/items", live=True)
+        with patch(
+            "fastapi_topaz._client.SharedAuthorizerClient.decisions",
+            new=AsyncMock(return_value={"allowed": False}),
+        ):
+            result = cmd_check(args)
+        assert result == 1
+
+        captured = capsys.readouterr()
+        assert "Decision: denied" in captured.out
+
+    def test_live_error(self, temp_app_module, capsys):
+        from unittest.mock import AsyncMock
+
+        args = MockArgs(app=temp_app_module, root="testapp", method="GET", path="/items", live=True)
+        with patch(
+            "fastapi_topaz._client.SharedAuthorizerClient.decisions",
+            new=AsyncMock(side_effect=ConnectionError("unreachable")),
+        ):
+            result = cmd_check(args)
+        assert result == 2
+
+        captured = capsys.readouterr()
+        assert "authorizer call failed" in captured.out
+        assert "ConnectionError" in captured.out
+
+    def test_main_entry_point(self, temp_app_module, capsys):
+        with patch(
+            "sys.argv",
+            [
+                "fastapi-topaz",
+                "check",
+                "--app",
+                temp_app_module,
+                "--method",
+                "GET",
+                "--path",
+                "/items",
+                "--root",
+                "testapp",
+            ],
+        ):
+            result = main()
+            assert result == 0
+
+        captured = capsys.readouterr()
+        assert "Policy:   testapp.GET.items" in captured.out

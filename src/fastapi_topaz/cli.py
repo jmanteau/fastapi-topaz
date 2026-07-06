@@ -3,6 +3,7 @@ Command-line interface for fastapi-topaz.
 
 Provides commands for policy generation, validation, and documentation.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -55,9 +56,7 @@ def cmd_generate_policies(args: argparse.Namespace) -> int:
         config = TopazConfig(
             authorizer_options=AuthorizerOptions(url="localhost:8282"),
             policy_path_root=args.root or "app",
-            identity_provider=lambda r: Identity(
-                type=IdentityType.IDENTITY_TYPE_NONE, value=""
-            ),
+            identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_NONE, value=""),
             policy_instance_name="generated",
         )
 
@@ -100,9 +99,7 @@ def cmd_policy_diff(args: argparse.Namespace) -> int:
         config = TopazConfig(
             authorizer_options=AuthorizerOptions(url="localhost:8282"),
             policy_path_root=args.root or "app",
-            identity_provider=lambda r: Identity(
-                type=IdentityType.IDENTITY_TYPE_NONE, value=""
-            ),
+            identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_NONE, value=""),
             policy_instance_name="generated",
         )
 
@@ -161,9 +158,7 @@ def cmd_generate_rights_matrix(args: argparse.Namespace) -> int:
         config = TopazConfig(
             authorizer_options=AuthorizerOptions(url="localhost:8282"),
             policy_path_root=args.root or "app",
-            identity_provider=lambda r: Identity(
-                type=IdentityType.IDENTITY_TYPE_NONE, value=""
-            ),
+            identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_NONE, value=""),
             policy_instance_name="generated",
         )
 
@@ -171,7 +166,8 @@ def cmd_generate_rights_matrix(args: argparse.Namespace) -> int:
     output_file = args.output
 
     results = generate_rights_matrix(
-        app, config,
+        app,
+        config,
         policies_dir=policies_dir,
         output_file=output_file,
     )
@@ -211,6 +207,93 @@ def cmd_policy_map(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check(args: argparse.Namespace) -> int:
+    """Resolve (and optionally evaluate) the policy for a concrete request."""
+    from starlette.routing import Match
+
+    from .codegen import generate_rights_matrix
+
+    app = import_app(args.app)
+
+    if args.config:
+        config = import_config(args.config)
+    else:
+        from aserto.client import AuthorizerOptions, Identity, IdentityType
+
+        from .dependencies import TopazConfig
+
+        config = TopazConfig(
+            authorizer_options=AuthorizerOptions(url="localhost:8282"),
+            policy_path_root=args.root or "app",
+            identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_NONE, value=""),
+            policy_instance_name="generated",
+        )
+
+    method = args.method.upper()
+    scope = {"type": "http", "method": method, "path": args.path, "root_path": ""}
+
+    matched_route = None
+    path_params: dict = {}
+    for route in app.routes:
+        match, child_scope = route.matches(scope)
+        if match == Match.FULL:
+            matched_route = route
+            path_params = child_scope.get("path_params", {})
+            break
+
+    if matched_route is None:
+        print(f"Error: no route matches {method} {args.path}")
+        return 2
+
+    resolutions = generate_rights_matrix(app, config, policies_dir=args.policies)
+    resolution = next(
+        (r for r in resolutions if r.method == method and r.route_pattern == matched_route.path),
+        None,
+    )
+    if resolution is None:
+        print(f"Error: route {method} {matched_route.path} is excluded from policy resolution")
+        return 2
+
+    print(f"Route:    {method} {matched_route.path}")
+    print(f"Policy:   {resolution.resolved_policy_path}")
+    print(f"Source:   {resolution.resolution_source}")
+    if path_params:
+        print(f"Params:   {path_params}")
+
+    if not args.live:
+        return 0
+
+    import asyncio
+
+    from aserto.client import Identity, IdentityType, ResourceContext
+
+    identity = Identity(
+        type=IdentityType.IDENTITY_TYPE_SUB if args.identity else IdentityType.IDENTITY_TYPE_NONE,
+        value=args.identity or "",
+    )
+    resource_context: ResourceContext = {str(k): str(v) for k, v in path_params.items()}
+
+    try:
+        results = asyncio.run(
+            config._authorizer.decisions(
+                identity=identity,
+                policy_path=resolution.resolved_policy_path,
+                decisions=("allowed",),
+                policy_instance_name=config.policy_instance_name,
+                policy_instance_label=config.policy_instance_label,
+                resource_context=resource_context,
+                timeout=config.check_timeout,
+            )
+        )
+    except Exception as e:
+        print(f"Error: authorizer call failed: {type(e).__name__}: {e}")
+        return 2
+
+    allowed = results.get("allowed", False)
+    print(f"Decision: {'allowed' if allowed else 'denied'}")
+    return 0 if allowed else 1
+
+
 def main() -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -231,9 +314,7 @@ def main() -> int:
     gen.set_defaults(func=cmd_generate_policies)
 
     # policy-diff
-    diff = subparsers.add_parser(
-        "policy-diff", help="Compare routes against existing policies"
-    )
+    diff = subparsers.add_parser("policy-diff", help="Compare routes against existing policies")
     diff.add_argument("--app", required=True, help="FastAPI app (module:attribute)")
     diff.add_argument("--policies", "-p", help="Policies directory (default: policies/)")
     diff.add_argument("--config", help="TopazConfig (module:attribute)")
@@ -248,14 +329,28 @@ def main() -> int:
     matrix.add_argument("--app", required=True, help="FastAPI app (module:attribute)")
     matrix.add_argument("--config", help="TopazConfig (module:attribute)")
     matrix.add_argument("--root", help="Policy path root (default: app)")
-    matrix.add_argument("--policies", "-p", help="Policies directory (enables file existence checks)")
+    matrix.add_argument(
+        "--policies", "-p", help="Policies directory (enables file existence checks)"
+    )
     matrix.add_argument("--output", "-o", help="Output Markdown file")
     matrix.set_defaults(func=cmd_generate_rights_matrix)
 
-    # policy-map
-    pmap = subparsers.add_parser(
-        "policy-map", help="Generate route-to-policy mapping"
+    # check
+    check = subparsers.add_parser("check", help="Resolve the policy for a concrete request URL")
+    check.add_argument("--app", required=True, help="FastAPI app (module:attribute)")
+    check.add_argument("--method", required=True, help="HTTP method (e.g. GET)")
+    check.add_argument("--path", required=True, help="Concrete URL path (e.g. /documents/1)")
+    check.add_argument("--config", help="TopazConfig (module:attribute)")
+    check.add_argument("--root", help="Policy path root (default: app)")
+    check.add_argument("--policies", "-p", help="Policies directory (enables explicit tier)")
+    check.add_argument(
+        "--live", action="store_true", help="Also evaluate the decision against the authorizer"
     )
+    check.add_argument("--identity", help="Identity value for --live (IDENTITY_TYPE_SUB)")
+    check.set_defaults(func=cmd_check)
+
+    # policy-map
+    pmap = subparsers.add_parser("policy-map", help="Generate route-to-policy mapping")
     pmap.add_argument("--app", required=True, help="FastAPI app (module:attribute)")
     pmap.add_argument("--root", help="Policy path root (default: app)")
     pmap.add_argument("--format", choices=["text", "markdown"], default="text")

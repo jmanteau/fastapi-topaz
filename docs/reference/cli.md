@@ -122,6 +122,37 @@ Output:
 | /documents/{id} | DELETE | myapp.DELETE.documents.__id |
 ```
 
+### check
+
+Resolve which policy guards a concrete request URL, and optionally evaluate the decision against a live authorizer. Useful for debugging why a request hits an unexpected policy.
+
+```bash
+fastapi-topaz check --app myapp.main:app --method GET --path /documents/1
+```
+
+Options:
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--app` | Yes | FastAPI app import path (module:variable) |
+| `--method` | Yes | HTTP method (e.g. GET) |
+| `--path` | Yes | Concrete URL path (e.g. /documents/1, not the route template) |
+| `--config` | No | TopazConfig import path |
+| `--root` | No | Policy path root (default: app) |
+| `--policies` | No | Policies directory (enables the explicit resolution tier) |
+| `--live` | No | Also evaluate the `allowed` decision against the authorizer |
+| `--identity` | No | Identity value for `--live` (sent as IDENTITY_TYPE_SUB) |
+
+Output:
+```
+Route:    GET /documents/{id}
+Policy:   myapp.GET.documents.__id
+Source:   generated
+Params:   {'id': '1'}
+```
+
+With `--live`, a `Decision: allowed` or `Decision: denied` line is appended. Exit codes: 0 allowed (or offline resolution succeeded), 1 denied, 2 error (no matching route or authorizer failure).
+
 ## Exit Codes
 
 | Code | Meaning |
