@@ -19,39 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 2026-07-06: Test coverage for previously untested paths: `SharedAuthorizerClient.decisions()` request construction, OpenTelemetry span attributes/status (via `opentelemetry-sdk` in dev extras), and the `generate-rights-matrix` CLI command
 - `TopazConfig(insecure=...)`: first-class plaintext (non-TLS) gRPC channel option for local development, replacing ad-hoc monkey-patching
 - `fastapi_topaz.__version__` exposing the installed package version
-
-### Changed
-
-- Denied authorization responses from dependencies now return a generic `"Forbidden"` detail (matching the middleware) instead of leaking the policy path, relation, or denied hierarchy level; the details remain in DEBUG logs and audit events
-- Per-request dependency log lines (check/result/granted/denied) moved from INFO/WARNING to DEBUG; the audit logger is the structured record for decisions
-- Middleware caches route matches for static paths (no path parameters), skipping the per-request route scan
-- `policy_groups` and `default_policy` are validated on every assignment, not only at construction
-- Decision-cache and stale-cache keys use a shared helper with JSON-based context serialization stable across nested-dict key ordering
-
-### Removed
-
-- Dead no-op fixture stubs in `fastapi_topaz.testing` (`pytest_configure`, `mock_topaz_config_fixture`, `allow_all_auth_fixture`, `deny_all_auth_fixture`)
-- Ineffective PolicyGroup overlap warning that only probed hardcoded prefixes
-
-### Fixed
-
-- pyproject URLs now point to this project instead of the upstream Topaz repository
-- CLI output uses plain text instead of unicode symbols
-- Documentation deploy workflow now requires quality checks and tests to pass before deploying
-
-- Circuit breaker now detects gRPC errors (`grpc.RpcError`, including `grpc.aio.AioRpcError`) as failures based on their status code, so the breaker actually trips during Topaz outages; previously the default `failure_exceptions` never matched gRPC errors
-- Authorization checks now reuse a single long-lived gRPC channel instead of opening (and never closing) a new secure channel per request, eliminating a channel and file-descriptor leak
-- Middleware now logs authorization infrastructure errors with full tracebacks and emits an audit event with `reason="authorizer_error"` instead of silently converting every failure into a 403; identity-provider exceptions are logged instead of being swallowed
-- Cache hits now record the actual cached decision in metrics and tracing; previously every cache hit was labeled `decision="denied"` regardless of the cached value
-- Middleware authorization checks are now attributed to `source="middleware"` in metrics, cache counters, and tracing spans, matching the audit log; previously they were mislabeled as `source="dependency"`
-- `scan_routes` (and therefore `generate-policies`, `policy-diff`, and `generate-rights-matrix`) now applies the configured `policy_path_normalizer`, so generated policies match what the runtime evaluates instead of drifting on e.g. hyphenated paths
-- `policy_diff` no longer reports `default_policy` and `PolicyGroup` policy files as orphaned, so a correctly configured resolution chain passes `policy-diff --strict`
-- `TopazConfig` and `ConnectionPool` now create their asyncio primitives lazily on first use instead of at construction, fixing "attached to a different loop" errors on Python 3.9 when the config is created at module import time
-- Dependencies now raise 500 on unresolvable or empty object IDs (missing path param, header, or query param) instead of silently checking against `object_id=""` in Topaz
-- Creating a second `PrometheusMetrics` instance no longer crashes with a duplicate-registration error; existing collectors are reused from the registry
-
-### Added
-
 - `TopazConfig(check_timeout=...)`: gRPC deadline in seconds applied to each authorization call (default 5.0), so a hung Topaz no longer hangs requests forever
 - `TopazMiddleware(on_error=...)`: opt-in `"unavailable"` mode returns 503 instead of the fail-closed 403 default when the authorization check itself fails
 - `CircuitBreaker(failure_grpc_codes=...)`: set of gRPC status codes treated as failures (default: UNAVAILABLE, DEADLINE_EXCEEDED, UNKNOWN, INTERNAL, RESOURCE_EXHAUSTED); policy errors such as INVALID_ARGUMENT do not trip the breaker
@@ -65,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Denied authorization responses from dependencies now return a generic `"Forbidden"` detail (matching the middleware) instead of leaking the policy path, relation, or denied hierarchy level; the details remain in DEBUG logs and audit events
+- Per-request dependency log lines (check/result/granted/denied) moved from INFO/WARNING to DEBUG; the audit logger is the structured record for decisions
+- Middleware caches route matches for static paths (no path parameters), skipping the per-request route scan
+- `policy_groups` and `default_policy` are validated on every assignment, not only at construction
+- Decision-cache and stale-cache keys use a shared helper with JSON-based context serialization stable across nested-dict key ordering
 - Audit events are now emitted from `check_decision` for all sources (middleware, dependency, manual), so dependency and manual checks are audited too; previously only the middleware emitted decision events
 
 ### Deprecated
@@ -74,6 +46,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CircuitBreaker.timeout_ms`: has no effect; use `TopazConfig.check_timeout` instead; warns on non-default values and will be removed in 2.0
 - `CircuitBreaker.cache_priority`: has no effect; warns when set and will be removed in 2.0
 - `fastapi_topaz.AuthorizationError` and the `IdentityMapper`/`StringMapper`/`ObjectMapper`/`ResourceMapper` type aliases: served lazily with a `DeprecationWarning` on import and will be removed in 2.0
+
+### Removed
+
+- Dead no-op fixture stubs in `fastapi_topaz.testing` (`pytest_configure`, `mock_topaz_config_fixture`, `allow_all_auth_fixture`, `deny_all_auth_fixture`)
+- Ineffective PolicyGroup overlap warning that only probed hardcoded prefixes
+
+### Fixed
+
+- pyproject URLs now point to this project instead of the upstream Topaz repository
+- CLI output uses plain text instead of unicode symbols
+- Documentation deploy workflow now requires quality checks and tests to pass before deploying
+- Circuit breaker now detects gRPC errors (`grpc.RpcError`, including `grpc.aio.AioRpcError`) as failures based on their status code, so the breaker actually trips during Topaz outages; previously the default `failure_exceptions` never matched gRPC errors
+- Authorization checks now reuse a single long-lived gRPC channel instead of opening (and never closing) a new secure channel per request, eliminating a channel and file-descriptor leak
+- Middleware now logs authorization infrastructure errors with full tracebacks and emits an audit event with `reason="authorizer_error"` instead of silently converting every failure into a 403; identity-provider exceptions are logged instead of being swallowed
+- Cache hits now record the actual cached decision in metrics and tracing; previously every cache hit was labeled `decision="denied"` regardless of the cached value
+- Middleware authorization checks are now attributed to `source="middleware"` in metrics, cache counters, and tracing spans, matching the audit log; previously they were mislabeled as `source="dependency"`
+- `scan_routes` (and therefore `generate-policies`, `policy-diff`, and `generate-rights-matrix`) now applies the configured `policy_path_normalizer`, so generated policies match what the runtime evaluates instead of drifting on e.g. hyphenated paths
+- `policy_diff` no longer reports `default_policy` and `PolicyGroup` policy files as orphaned, so a correctly configured resolution chain passes `policy-diff --strict`
+- `TopazConfig` and `ConnectionPool` now create their asyncio primitives lazily on first use instead of at construction, fixing "attached to a different loop" errors on Python 3.9 when the config is created at module import time
+- Dependencies now raise 500 on unresolvable or empty object IDs (missing path param, header, or query param) instead of silently checking against `object_id=""` in Topaz
+- Creating a second `PrometheusMetrics` instance no longer crashes with a duplicate-registration error; existing collectors are reused from the registry
 
 ## [1.1.0] - 2026-02-13
 
