@@ -91,6 +91,16 @@ circuit_breaker=CircuitBreaker(fallback=custom_fallback)
 
 ## Health Check Integration
 
+The built-in helper returns readiness in one call — `healthy` is False when the circuit is open or a requested ping fails:
+
+```python
+@app.get("/health/authz")
+async def authz_health():
+    return await config.health(ping=True)
+```
+
+Pass `ping=True` to also call the authorizer's Info RPC as a reachability probe (failures are reported in the `ping` key, never raised). For a custom shape, build it from the breaker status directly:
+
 ```python
 @app.get("/health")
 async def health():

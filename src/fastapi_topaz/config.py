@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from aserto.client import AuthorizerOptions, Identity, ResourceContext
@@ -401,6 +401,54 @@ class TopazConfig:
             self._stale_cache.clear()
 
         return removed
+
+    async def health(self, ping: bool = False) -> dict[str, Any]:
+        """Report authorization readiness for health/readiness endpoints.
+
+        Args:
+            ping: Also call the authorizer's Info RPC to verify reachability.
+                Ping failures are reported in the result, never raised.
+
+        Returns:
+            Dict with keys: ``healthy`` (False when the circuit breaker is
+            open or a requested ping failed), ``authorizer_url``,
+            ``check_timeout``, ``circuit_breaker`` (status dict or None),
+            ``cache_size`` (int or None), and ``ping`` (``{"ok", "error"}``
+            or None when not requested).
+
+        Example:
+            ```python
+            @app.get("/health/authz")
+            async def authz_health():
+                return await config.health(ping=True)
+            ```
+        """
+        healthy = True
+
+        circuit_status = None
+        if self.circuit_breaker:
+            status = self.circuit_breaker.status()
+            circuit_status = asdict(status)
+            if status.is_open:
+                healthy = False
+
+        ping_result: dict[str, Any] | None = None
+        if ping:
+            try:
+                await self._authorizer.info(timeout=self.check_timeout)
+                ping_result = {"ok": True, "error": None}
+            except Exception as e:
+                ping_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                healthy = False
+
+        return {
+            "healthy": healthy,
+            "authorizer_url": self.authorizer_options.url,
+            "check_timeout": self.check_timeout,
+            "circuit_breaker": circuit_status,
+            "cache_size": self.decision_cache.size() if self.decision_cache else None,
+            "ping": ping_result,
+        }
 
     async def _emit_audit_event(
         self,

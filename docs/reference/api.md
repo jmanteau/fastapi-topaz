@@ -16,6 +16,8 @@ Complete reference for all fastapi-topaz public exports.
         - is_allowed
         - check_relation
         - check_relations
+        - invalidate_cache
+        - health
         - policy_path_for
         - create_client
 

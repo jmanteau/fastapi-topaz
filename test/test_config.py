@@ -561,3 +561,76 @@ class TestBatchedRelationChecks:
             call.kwargs["resource_context"]["object_id"] == "42"
             for call in audit.log_decision.await_args_list
         )
+
+
+@pytest.mark.asyncio
+class TestHealth:
+    """F6: TopazConfig.health() readiness helper."""
+
+    async def test_shape_without_breaker_or_cache(self):
+        config = _make_config()
+
+        result = await config.health()
+
+        assert result == {
+            "healthy": True,
+            "authorizer_url": "localhost:8282",
+            "check_timeout": 5.0,
+            "circuit_breaker": None,
+            "cache_size": None,
+            "ping": None,
+        }
+
+    async def test_includes_breaker_status_and_cache_size(self):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        cache = DecisionCache()
+        await cache.set("user-1", "test.check", "can_read", None, True)
+        config = _make_config(circuit_breaker=CircuitBreaker(), decision_cache=cache)
+
+        result = await config.health()
+
+        assert result["healthy"] is True
+        assert result["cache_size"] == 1
+        assert result["circuit_breaker"]["state"] == "closed"
+        assert result["circuit_breaker"]["failure_count"] == 0
+
+    async def test_open_circuit_makes_healthy_false(self):
+        import time as _time
+
+        from fastapi_topaz.circuit_breaker import CircuitBreaker, CircuitState
+
+        breaker = CircuitBreaker()
+        breaker._state = CircuitState.OPEN
+        breaker._open_since = _time.monotonic()
+        config = _make_config(circuit_breaker=breaker)
+
+        result = await config.health()
+
+        assert result["healthy"] is False
+        assert result["circuit_breaker"]["state"] == "open"
+
+    async def test_ping_success(self):
+        config = _make_config()
+        config._authorizer = Mock()
+        config._authorizer.info = AsyncMock(
+            return_value={"version": "0.30.0", "commit": "abc", "date": "", "os": "", "arch": ""}
+        )
+
+        result = await config.health(ping=True)
+
+        assert result["healthy"] is True
+        assert result["ping"] == {"ok": True, "error": None}
+        config._authorizer.info.assert_awaited_once_with(timeout=5.0)
+
+    async def test_ping_failure_caught_not_raised(self):
+        config = _make_config()
+        config._authorizer = Mock()
+        config._authorizer.info = AsyncMock(side_effect=ConnectionError("unreachable"))
+
+        result = await config.health(ping=True)
+
+        assert result["healthy"] is False
+        assert result["ping"]["ok"] is False
+        assert "ConnectionError" in result["ping"]["error"]
+        assert "unreachable" in result["ping"]["error"]

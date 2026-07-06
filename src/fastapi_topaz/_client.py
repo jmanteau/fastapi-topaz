@@ -109,6 +109,26 @@ class SharedAuthorizerClient:
             results[decision_object.decision] = getattr(decision_object, "is")
         return results
 
+    async def info(self, timeout: float | None = None) -> dict[str, str]:
+        """Call the authorizer Info RPC — a lightweight reachability probe.
+
+        Returns:
+            Dict with the authorizer's version metadata.
+        """
+        stub = await self._ensure_channel()
+        response = await stub.Info(
+            authorizer.InfoRequest(),
+            metadata=self._metadata,
+            timeout=timeout,
+        )
+        return {
+            "version": response.version,
+            "commit": response.commit,
+            "date": response.date,
+            "os": response.os,
+            "arch": response.arch,
+        }
+
     async def close(self) -> None:
         """Close the underlying channel if it was created."""
         if self._channel is not None:

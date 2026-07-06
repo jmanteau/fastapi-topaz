@@ -263,3 +263,33 @@ class TestInsecureChannel:
 
         default_config = _make_config()
         assert default_config._authorizer._insecure is False
+
+
+class TestInfoRpc:
+    """info() wraps the Info RPC as a reachability probe."""
+
+    @pytest.mark.asyncio
+    async def test_returns_version_metadata(self):
+        options = AuthorizerOptions(url="localhost:8282", tenant_id="tenant-1", api_key="key-1")
+        client = SharedAuthorizerClient(options)
+        stub = Mock()
+        stub.Info = AsyncMock(
+            return_value=Mock(
+                version="0.30.0", commit="abc123", date="2026-01-01", os="linux", arch="amd64"
+            )
+        )
+        client._stub = stub
+
+        result = await client.info(timeout=2.0)
+
+        assert result == {
+            "version": "0.30.0",
+            "commit": "abc123",
+            "date": "2026-01-01",
+            "os": "linux",
+            "arch": "amd64",
+        }
+        stub.Info.assert_awaited_once()
+        kwargs = stub.Info.call_args.kwargs
+        assert kwargs["timeout"] == 2.0
+        assert ("aserto-tenant-id", "tenant-1") in kwargs["metadata"]
