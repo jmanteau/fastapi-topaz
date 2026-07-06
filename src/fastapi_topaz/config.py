@@ -18,7 +18,7 @@ from .cache import make_decision_key
 
 if TYPE_CHECKING:
     from .audit import AuditLogger
-    from .cache import DecisionCache
+    from .cache import CacheBackend
     from .circuit_breaker import CircuitBreaker
     from .connection_pool import ConnectionPool
     from .observability import OTelTracing, PrometheusMetrics
@@ -188,7 +188,7 @@ class TopazConfig:
         policy_path_normalizer: Callable[[str], str] | None = None,
         default_policy: str | None = None,
         policy_groups: list[PolicyGroup] | None = None,
-        decision_cache: DecisionCache | None = None,
+        decision_cache: CacheBackend | None = None,
         max_concurrent_checks: int = 10,
         check_timeout: float | None = 5.0,
         circuit_breaker: CircuitBreaker | None = None,

@@ -11,7 +11,7 @@ except PackageNotFoundError:  # editable/dev install without metadata
 from ._defaults import Obj
 from ._policy import normalize_hyphens
 from .audit import AuditEvent, AuditLogger
-from .cache import DecisionCache
+from .cache import CacheBackend, DecisionCache
 from .circuit_breaker import CircuitBreaker, CircuitState, CircuitStatus
 from .config import HierarchyResult, PolicyGroup, TopazConfig
 from .connection_pool import ConnectionPool, PoolStatus
@@ -55,6 +55,7 @@ __all__ = [
     # Metadata
     "__version__",
     # Core
+    "CacheBackend",
     "DecisionCache",
     "HierarchyResult",
     "PolicyGroup",

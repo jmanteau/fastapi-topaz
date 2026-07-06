@@ -142,3 +142,68 @@ class TestMakeDecisionKey:
         assert config._make_stale_cache_key(
             "user1", "app.GET.docs", "allowed", {"id": "1"}
         ) == make_decision_key("user1", "app.GET.docs", "allowed", {"id": "1"})
+
+
+class DictBackend:
+    """Minimal custom CacheBackend used to verify structural conformance."""
+
+    def __init__(self):
+        self.store = {}
+
+    async def get(self, identity_value, policy_path, decision, resource_context):
+        return self.store.get(make_decision_key(identity_value, policy_path, decision, resource_context))
+
+    async def set(self, identity_value, policy_path, decision, resource_context, value):
+        self.store[make_decision_key(identity_value, policy_path, decision, resource_context)] = value
+
+    async def clear(self):
+        self.store.clear()
+
+    def size(self):
+        return len(self.store)
+
+
+@pytest.mark.asyncio
+class TestCacheBackendProtocol:
+    """F4: custom backends plug into TopazConfig via the CacheBackend protocol."""
+
+    def _make_config(self, backend):
+        from aserto.client import AuthorizerOptions, Identity, IdentityType
+
+        from fastapi_topaz.config import TopazConfig
+
+        return TopazConfig(
+            authorizer_options=AuthorizerOptions(url="localhost:8282"),
+            policy_path_root="test",
+            identity_provider=lambda r: Identity(
+                type=IdentityType.IDENTITY_TYPE_SUB, value="user-1"
+            ),
+            policy_instance_name="test",
+            decision_cache=backend,
+        )
+
+    def test_decision_cache_conforms_structurally(self):
+        from fastapi_topaz.cache import CacheBackend
+
+        assert isinstance(DecisionCache(), CacheBackend)
+        assert isinstance(DictBackend(), CacheBackend)
+
+    async def test_check_decision_uses_custom_backend(self):
+        from unittest.mock import AsyncMock, MagicMock, Mock
+
+        backend = DictBackend()
+        config = self._make_config(backend)
+        mock_authorizer = Mock()
+        mock_authorizer.decisions = AsyncMock(return_value={"allowed": True})
+        config._authorizer = mock_authorizer
+        request = MagicMock()
+        request.path_params = {}
+
+        # First call misses the backend and hits the wire
+        assert await config.check_decision(request, "test.GET.docs", "allowed") is True
+        assert mock_authorizer.decisions.await_count == 1
+        assert backend.size() == 1
+
+        # Second call is served from the custom backend
+        assert await config.check_decision(request, "test.GET.docs", "allowed") is True
+        assert mock_authorizer.decisions.await_count == 1

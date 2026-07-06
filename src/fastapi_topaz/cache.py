@@ -9,10 +9,54 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field
+from typing import Protocol, runtime_checkable
 
 from aserto.client import ResourceContext
 
-__all__ = ["CacheEntry", "DecisionCache", "make_decision_key"]
+__all__ = ["CacheBackend", "CacheEntry", "DecisionCache", "make_decision_key"]
+
+
+@runtime_checkable
+class CacheBackend(Protocol):
+    """Structural interface for pluggable decision cache backends.
+
+    Any object implementing these four methods can be passed as
+    ``TopazConfig(decision_cache=...)`` — e.g. a Redis- or memcached-backed
+    store. :class:`DecisionCache` is the built-in in-memory implementation.
+
+    Backends may additionally implement
+    ``async invalidate(identity_value=None, policy_path=None, object_id=None) -> int``;
+    when present, :meth:`TopazConfig.invalidate_cache` delegates to it.
+    """
+
+    async def get(
+        self,
+        identity_value: str,
+        policy_path: str,
+        decision: str,
+        resource_context: ResourceContext | None,
+    ) -> bool | None:
+        """Return the cached decision, or None if not cached or expired."""
+        ...
+
+    async def set(
+        self,
+        identity_value: str,
+        policy_path: str,
+        decision: str,
+        resource_context: ResourceContext | None,
+        value: bool,
+    ) -> None:
+        """Cache a decision."""
+        ...
+
+    async def clear(self) -> None:
+        """Remove all cached entries."""
+        ...
+
+    def size(self) -> int:
+        """Current number of cached entries."""
+        ...
 
 
 def make_decision_key(
