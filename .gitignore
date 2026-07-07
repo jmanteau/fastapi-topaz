@@ -84,6 +84,5 @@ logs/
 # Documentation
 site/
 docs/reference/e2e-tests.md
-uv.lock
 .claude/
 .omc

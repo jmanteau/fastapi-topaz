@@ -76,6 +76,15 @@ def skip_middleware(func: Callable) -> Callable:
     return func
 
 
+def _dependant_has_skip(dependant: Any) -> bool:
+    for sub in getattr(dependant, "dependencies", []):
+        if getattr(sub, "call", None) is SkipMiddleware:
+            return True
+        if _dependant_has_skip(sub):
+            return True
+    return False
+
+
 class TopazMiddleware:
     """
     FastAPI middleware for global authorization (pure ASGI).
@@ -250,6 +259,10 @@ class TopazMiddleware:
                 dep_callable = getattr(dep, "dependency", None)
                 if dep_callable is SkipMiddleware:
                     return True
+
+            dependant = getattr(route, "dependant", None)
+            if dependant and _dependant_has_skip(dependant):
+                return True
 
         return False
 
