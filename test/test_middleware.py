@@ -10,6 +10,7 @@ Test organization:
 - TestExcludeMethods: HTTP method exclusion (OPTIONS, HEAD by default)
 - TestSkipMiddlewareDecorator: @skip_middleware route decorator
 - TestSkipMiddlewareDependency: SkipMiddleware dependency for routers
+- TestFrontendRoutes: FastAPI frontend routes (app.frontend / router.frontend)
 - TestOnMissingIdentity: Handling unauthenticated requests
 - TestOnDenied: Custom denial response handlers
 - TestMiddlewareWithCache: Decision caching integration
@@ -36,6 +37,10 @@ from fastapi_topaz import (
     skip_middleware,
 )
 from fastapi_topaz._client import SharedAuthorizerClient
+
+requires_frontend = pytest.mark.skipif(
+    not hasattr(FastAPI, "frontend"), reason="FastAPI without frontend routes"
+)
 
 
 @pytest.fixture
@@ -344,6 +349,86 @@ class TestSkipMiddlewareDependency:
         client = TestClient(app)
         assert client.get("/nested").status_code == 200
         assert client.get("/protected").status_code == 403
+
+
+@requires_frontend
+class TestFrontendRoutes:
+    """
+    FastAPI frontend routes are matched after regular routes, outside
+    app.routes; the middleware must authorize them instead of passing
+    them through as 404s.
+    """
+
+    @pytest.fixture
+    def dist(self, tmp_path):
+        (tmp_path / "index.html").write_text("<html></html>")
+        (tmp_path / "app.js").write_text("")
+        return tmp_path
+
+    def test_denies_frontend_route(self, topaz_config, patch_client_denied, dist):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+        app.frontend("/app", directory=dist)
+
+        client = TestClient(app)
+        assert client.get("/app/app.js").status_code == 403
+        assert client.get("/nope").status_code == 404
+
+    def test_policy_path_uses_frontend_mount_path(self, topaz_config, patch_client, dist):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+        app.frontend("/app", directory=dist)
+
+        client = TestClient(app)
+        assert client.get("/app/app.js").status_code == 200
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.GET.app"
+
+    def test_policy_path_for_included_router_frontend(self, topaz_config, patch_client, dist):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+        router = APIRouter()
+        router.frontend("/", directory=dist)
+        app.include_router(router, prefix="/ui")
+
+        client = TestClient(app)
+        assert client.get("/ui/app.js").status_code == 200
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.GET.ui"
+
+    def test_skips_frontend_router_included_with_dependency(
+        self, topaz_config, patch_client_denied, dist
+    ):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+        public = APIRouter()
+        public.frontend("/", directory=dist)
+        app.include_router(public, prefix="/public", dependencies=[Depends(SkipMiddleware)])
+        app.frontend("/app", directory=dist)
+
+        client = TestClient(app)
+        assert client.get("/public/app.js").status_code == 200
+        assert client.get("/app/app.js").status_code == 403
+
+    def test_denies_when_frontend_matching_unsupported(
+        self, topaz_config, patch_client, dist, monkeypatch
+    ):
+        # Simulates a FastAPI release that renamed its private matcher
+        from fastapi.routing import APIRouter as FastAPIRouter
+
+        monkeypatch.delattr(FastAPIRouter, "_match_low_priority")
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/items")
+        def items():
+            return []
+
+        client = TestClient(app, raise_server_exceptions=False)
+        assert client.get("/items").status_code == 200
+        assert client.get("/anything").status_code == 403
 
 
 class TestOnMissingIdentity:
