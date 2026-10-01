@@ -466,6 +466,28 @@ class TestAnnotateOpenapi:
         assert operation["x-authz-policy"] == "myapp.GET.folders.__folder_id"
         assert operation["x-authz-source"] == "generated"
 
+    def test_router_included_twice_never_gets_other_prefix_policy(self, config):
+        app = FastAPI()
+        router = APIRouter()
+
+        @router.get("/items")
+        def items():
+            return []
+
+        app.include_router(router, prefix="/a")
+        app.include_router(router, prefix="/b")
+        assert annotate_openapi(app, config) == 2
+
+        # Adding a route makes FastAPI >= 0.137 rebuild included route contexts
+        # from the original routes
+        @router.get("/later")
+        def later():
+            return []
+
+        paths = app.openapi()["paths"]
+        assert paths["/a/items"]["get"].get("x-authz-policy") in (None, "myapp.GET.a.items")
+        assert paths["/b/items"]["get"].get("x-authz-policy") in (None, "myapp.GET.b.items")
+
     def test_excluded_routes_not_annotated(self, sample_app, config):
         annotate_openapi(sample_app, config)
         for route in sample_app.routes:
