@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-01
+
 ### Added
 
 - 2026-07-06: `CacheBackend` protocol: structural interface for pluggable decision cache backends (e.g. Redis); any object with `get`/`set`/`clear`/`size` can be passed as `TopazConfig(decision_cache=...)`; exported from the package root
@@ -70,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TopazConfig` and `ConnectionPool` now create their asyncio primitives lazily on first use instead of at construction, fixing "attached to a different loop" errors on Python 3.9 when the config is created at module import time
 - Dependencies now raise 500 on unresolvable or empty object IDs (missing path param, header, or query param) instead of silently checking against `object_id=""` in Topaz
 - Creating a second `PrometheusMetrics` instance no longer crashes with a duplicate-registration error; existing collectors are reused from the registry
+- `SkipMiddleware` is now detected anywhere in a route's resolved dependency tree (including nested sub-dependencies), so router-level skips work across FastAPI versions that do not merge router dependencies into `route.dependencies`
 
 ## [1.1.0] - 2026-02-13
 
@@ -180,7 +183,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - aserto >= 0.32.2
 - Python >= 3.9
 
-[Unreleased]: https://github.com/jmanteau/fastapi-topaz/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/jmanteau/fastapi-topaz/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/jmanteau/fastapi-topaz/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/jmanteau/fastapi-topaz/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/jmanteau/fastapi-topaz/releases/tag/v1.0.1
 [1.0.0]: https://github.com/jmanteau/fastapi-topaz/releases/tag/v1.0.0

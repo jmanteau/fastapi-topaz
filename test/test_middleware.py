@@ -289,6 +289,25 @@ class TestSkipMiddlewareDependency:
         assert client.get("/public/status").status_code == 200
         assert client.get("/protected").status_code == 403
 
+    def test_skips_route_with_nested_dependency(self, topaz_config, patch_client_denied):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        def public_access(_: None = Depends(SkipMiddleware)) -> None:
+            return None
+
+        @app.get("/nested", dependencies=[Depends(public_access)])
+        def nested():
+            return {"status": "ok"}
+
+        @app.get("/protected", dependencies=[Depends(lambda: None)])
+        def protected():
+            return {"status": "protected"}
+
+        client = TestClient(app)
+        assert client.get("/nested").status_code == 200
+        assert client.get("/protected").status_code == 403
+
 
 class TestOnMissingIdentity:
     """
