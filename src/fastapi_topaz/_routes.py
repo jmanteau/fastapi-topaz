@@ -69,7 +69,8 @@ def match_frontend_route(app: Any, scope: Any) -> FrontendRoute | None:
     remainder = child_scope.get("fastapi", {}).get("frontend_path")
     if not isinstance(remainder, str):
         raise FrontendMatchError("FastAPI frontend match has no frontend_path")
-    from starlette._utils import get_route_path  # present wherever FastAPI has frontend
+    # Present wherever FastAPI has frontend routes; absent from older Starlette
+    from starlette._utils import get_route_path  # pyright: ignore[reportAttributeAccessIssue]
 
     route_path = get_route_path(scope)
     mount_path = route_path[: len(route_path) - len(remainder)].rstrip("/") or "/"
