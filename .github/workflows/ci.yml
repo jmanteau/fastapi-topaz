@@ -20,6 +20,8 @@ jobs:
           # Lowest FastAPI allowed by pyproject.toml
           - python-version: "3.10"
             fastapi: "==0.100.*"
+            # Starlette 0.27's TestClient passes app= to httpx, removed in 0.28
+            extra-pins: "'httpx<0.28'"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -30,7 +32,7 @@ jobs:
       - name: Pin FastAPI
         if: matrix.fastapi != 'latest'
         run: |
-          uv pip install "fastapi${{ matrix.fastapi }}"
+          uv pip install "fastapi${{ matrix.fastapi }}" ${{ matrix.extra-pins }}
           echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
       - name: Run lint, typecheck, and tests
         run: make ci
