@@ -12,6 +12,11 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        fastapi: ["latest"]
+        include:
+          # Older FastAPI keeps a flat app.routes list (see _routes.py)
+          - python-version: "3.10"
+            fastapi: "<0.137"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -19,5 +24,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: uv sync --extra dev
+      - name: Pin FastAPI
+        if: matrix.fastapi != 'latest'
+        run: |
+          uv pip install "fastapi${{ matrix.fastapi }}"
+          echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
       - name: Run lint, typecheck, and tests
         run: make ci
