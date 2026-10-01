@@ -67,6 +67,10 @@ Output:
 | /documents/{id} | DELETE | myapp.DELETE.documents.__id | Missing |
 ```
 
+### Frontend Routes and Mounts
+
+Frontend routes (`app.frontend()` / `router.frontend()`) and mounts (`app.mount()`) are authorized by the middleware with a prefix-only policy path, so they appear in generated policies, `policy-diff`, the rights matrix and `check` too. A frontend route gets one `GET` entry for its mount path (e.g. `myapp.GET.app`). A mount accepts every method, so it gets one entry each for `GET`, `POST`, `PUT`, `PATCH` and `DELETE` (`OPTIONS` and `HEAD` are excluded by the middleware by default).
+
 ## Startup Validation
 
 ```python
@@ -196,6 +200,8 @@ print(f"Annotated {count} routes")
 ```
 
 Resolution follows the same chain as the rights matrix: explicit `.rego` file (when `policies_dir` is given) > policy group > default policy > generated path. Existing `openapi_extra` values on routes are preserved.
+
+On FastAPI 0.137 and later, run `annotate_openapi()` after all routes are registered, including routes added to a router after it was passed to `include_router()`: FastAPI rebuilds that router's route contexts and the annotations on them are lost.
 
 ## See Also
 

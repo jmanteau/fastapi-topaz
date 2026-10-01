@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Policy generation, `policy-diff`, the rights matrix and the `check` CLI command now include frontend routes (one `GET` entry per mount path) and mounts (one entry each for `GET`, `POST`, `PUT`, `PATCH`, `DELETE`), which the middleware already authorizes; previously `policy-diff` reported them in sync while the middleware denied them at runtime
+- `TopazMiddleware` now fails closed with 403 for any breakage in FastAPI's private frontend matching internals, not only a missing matcher; other changes previously produced a 500
+- With a root frontend (`app.frontend("/")`), requests FastAPI answers with a trailing-slash redirect are no longer checked against the frontend policy, so a deny no longer replaces the redirect with a 403
+
+### Changed
+
+- Documented that on FastAPI 0.137+ `annotate_openapi` must run after routes are added to routers already passed to `include_router()`
+
 ## [1.2.1] - 2026-10-01
 
 ### Fixed

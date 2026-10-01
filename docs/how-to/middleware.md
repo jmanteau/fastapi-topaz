@@ -184,6 +184,8 @@ Mounted sub-apps (`app.mount("/sub", sub_app)`) match at the `Mount` itself, not
 
 FastAPI frontend routes (`app.frontend("/app", directory="dist")`, or `router.frontend(...)` on an included router) are matched only when no regular route matches. Like mounts, they get a prefix-only policy path from their mount path: every request under `/app/...`, including SPA fallback paths, evaluates `myapp.GET.app`. To leave a frontend public, include its router with `dependencies=[Depends(SkipMiddleware)]` or add its prefix to `exclude_paths`.
 
+With a root frontend (`app.frontend("/")`), a request that FastAPI answers with a trailing-slash redirect (e.g. `/items/` when only `/items` exists) is not checked against the frontend policy: FastAPI redirects before trying frontend routes, and the redirected request is authorized on its own.
+
 The middleware finds frontend routes through private FastAPI internals. If a FastAPI release changes them, the middleware fails closed: requests that match no regular route get `403` and an error is logged, instead of reaching an unauthorized frontend route.
 
 ## Performance

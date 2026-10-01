@@ -430,6 +430,47 @@ class TestFrontendRoutes:
         assert client.get("/items").status_code == 200
         assert client.get("/anything").status_code == 403
 
+    def test_denies_when_frontend_match_result_changes_shape(
+        self, topaz_config, patch_client, dist, monkeypatch
+    ):
+        from fastapi.routing import APIRouter as FastAPIRouter
+
+        monkeypatch.setattr(
+            FastAPIRouter, "_match_low_priority", lambda self, scope: (None, {}, None)
+        )
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        client = TestClient(app, raise_server_exceptions=False)
+        assert client.get("/anything").status_code == 403
+
+    def test_denies_when_route_path_helper_missing(
+        self, topaz_config, patch_client, dist, monkeypatch
+    ):
+        import starlette._utils
+
+        monkeypatch.delattr(starlette._utils, "get_route_path")
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        client = TestClient(app, raise_server_exceptions=False)
+        assert client.get("/anything").status_code == 403
+
+    def test_slash_redirect_wins_over_root_frontend(self, topaz_config, patch_client_denied, dist):
+        # FastAPI redirects /items/ to /items before trying frontend routes
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        @app.get("/items")
+        def items():
+            return []
+
+        app.frontend("/", directory=dist)
+
+        client = TestClient(app, follow_redirects=False)
+        assert client.get("/items/").status_code == 307
+        assert client.get("/app.js").status_code == 403
+
 
 class TestOnMissingIdentity:
     """

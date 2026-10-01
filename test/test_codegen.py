@@ -9,6 +9,7 @@ Test organization:
 - TestScanRoutes: Route scanning and policy path generation
 - TestGeneratePolicies: Rego policy file generation
 - TestPolicyDiff: Comparing routes against existing policies
+- TestFrontendAndMountRoutes: Frontend routes and mounts in scans and diffs
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from aserto.client import AuthorizerOptions, Identity, IdentityType
 from fastapi import APIRouter, FastAPI
 
 from fastapi_topaz import PolicyGroup, TopazConfig, normalize_hyphens
+from fastapi_topaz._routes import FrontendMatchError, iter_frontend_paths
 from fastapi_topaz.codegen import (
     PolicyTemplate,
     annotate_openapi,
@@ -28,6 +30,10 @@ from fastapi_topaz.codegen import (
     generate_rights_matrix,
     policy_diff,
     scan_routes,
+)
+
+requires_frontend = pytest.mark.skipif(
+    not hasattr(FastAPI, "frontend"), reason="FastAPI without frontend routes"
 )
 
 
@@ -153,6 +159,77 @@ class TestGeneratePolicies:
 
         for content in policies.values():
             assert "default allowed = true" in content
+
+
+class TestFrontendAndMountRoutes:
+    """Frontend routes and mounts are authorized by the middleware, so they must be scanned."""
+
+    @pytest.fixture
+    def dist(self, tmp_path):
+        (tmp_path / "index.html").write_text("<html></html>")
+        return tmp_path
+
+    @requires_frontend
+    def test_scans_frontend_routes(self, config, dist):
+        app = FastAPI()
+        app.frontend("/app", directory=dist)
+        router = APIRouter()
+        router.frontend("/", directory=dist)
+        app.include_router(router, prefix="/ui")
+        inner = APIRouter()
+        inner.frontend("/ui", directory=dist)
+        outer = APIRouter()
+        outer.include_router(inner, prefix="/in")
+        app.include_router(outer, prefix="/out")
+
+        routes = scan_routes(app, config.policy_path_root)
+        assert [(r["method"], r["path"], r["policy_path"]) for r in routes] == [
+            ("GET", "/app", "myapp.GET.app"),
+            ("GET", "/ui", "myapp.GET.ui"),
+            ("GET", "/out/in/ui", "myapp.GET.out.in.ui"),
+        ]
+
+    @requires_frontend
+    def test_policy_diff_reports_missing_frontend_policy(self, config, dist):
+        app = FastAPI()
+        app.frontend("/app", directory=dist)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            diff = policy_diff(app, config, tmpdir)
+        assert "myapp.GET.app" in [m.policy_path for m in diff.missing]
+
+    @requires_frontend
+    def test_frontend_layout_change_fails_loudly(self, dist, monkeypatch):
+        from fastapi.routing import APIRouter as FastAPIRouter
+
+        app = FastAPI()
+        app.frontend("/app", directory=dist)
+        monkeypatch.delattr(FastAPIRouter, "_iter_low_priority_routes")
+
+        with pytest.raises(FrontendMatchError):
+            iter_frontend_paths(app)
+
+    def test_scans_mount_for_every_authorized_method(self, config):
+        app = FastAPI()
+        app.mount("/sub", FastAPI())
+
+        routes = scan_routes(app, config.policy_path_root)
+        assert sorted((r["method"], r["path"]) for r in routes) == [
+            ("DELETE", "/sub"),
+            ("GET", "/sub"),
+            ("PATCH", "/sub"),
+            ("POST", "/sub"),
+            ("PUT", "/sub"),
+        ]
+
+    def test_skips_websocket_routes(self, config):
+        app = FastAPI()
+
+        @app.websocket("/ws")
+        async def ws(websocket):
+            pass
+
+        assert scan_routes(app, config.policy_path_root) == []
 
 
 class TestPolicyDiff:
