@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Python 3.9 support (end of life since October 2025): `requires-python` is now `>=3.10`
 - Dead no-op fixture stubs in `fastapi_topaz.testing` (`pytest_configure`, `mock_topaz_config_fixture`, `allow_all_auth_fixture`, `deny_all_auth_fixture`)
 - Ineffective PolicyGroup overlap warning that only probed hardcoded prefixes
 - Wall-clock ReDoS probe in `PolicyGroup` pattern compilation: it was flaky under CI jitter and patterns come from the app developer (trusted); plain regex-validity checking remains

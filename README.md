@@ -68,7 +68,7 @@ async def list_documents(
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - FastAPI 0.100+
 - Running Topaz instance
 

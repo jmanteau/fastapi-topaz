@@ -42,7 +42,7 @@ By the end of this tutorial, you'll have:
 
 ## Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - FastAPI 0.100+
 - Running Topaz instance ([Install Topaz](https://www.topaz.sh/docs/getting-started))
 
