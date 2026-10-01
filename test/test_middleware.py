@@ -138,6 +138,23 @@ class TestTopazMiddleware:
         call_kwargs = patch_client.decisions.call_args.kwargs
         assert call_kwargs["policy_path"] == "testapp.GET.documents.__doc_id"
 
+    def test_generates_policy_path_for_included_router(self, topaz_config, patch_client):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+        router = APIRouter(prefix="/documents")
+
+        @router.get("/{doc_id}")
+        def route(doc_id: int):
+            return {"id": doc_id}
+
+        app.include_router(router)
+
+        client = TestClient(app)
+        assert client.get("/documents/123").status_code == 200
+
+        call_kwargs = patch_client.decisions.call_args.kwargs
+        assert call_kwargs["policy_path"] == "testapp.GET.documents.__doc_id"
+
     def test_includes_path_params_in_context(self, topaz_config, patch_client):
         app = FastAPI()
         app.add_middleware(TopazMiddleware, config=topaz_config)
@@ -284,6 +301,26 @@ class TestSkipMiddlewareDependency:
             return {"status": "protected"}
 
         app.include_router(public_router)
+
+        client = TestClient(app)
+        assert client.get("/public/status").status_code == 200
+        assert client.get("/protected").status_code == 403
+
+    def test_skips_router_included_with_dependency(self, topaz_config, patch_client_denied):
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=topaz_config)
+
+        public_router = APIRouter()
+
+        @public_router.get("/status")
+        def public_status():
+            return {"status": "ok"}
+
+        @app.get("/protected")
+        def protected():
+            return {"status": "protected"}
+
+        app.include_router(public_router, prefix="/public", dependencies=[Depends(SkipMiddleware)])
 
         client = TestClient(app)
         assert client.get("/public/status").status_code == 200

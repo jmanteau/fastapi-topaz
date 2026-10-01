@@ -186,7 +186,7 @@ This documentation follows the [Diataxis](https://diataxis.fr/) framework:
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - FastAPI 0.100+
 - Running [Topaz](https://www.topaz.sh/) instance
 
