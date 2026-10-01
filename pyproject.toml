@@ -22,7 +22,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries",
   "Typing :: Typed",
 ]
-dependencies = ["fastapi>=0.100.0", "aserto>=0.32.2"]
+dependencies = ["fastapi>=0.100.0,!=0.137.0,!=0.137.1", "aserto>=0.32.2"]
 
 [project.optional-dependencies]
 dev = [

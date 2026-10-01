@@ -71,6 +71,20 @@ def get_item(id: int):
 """
 
 
+ROUTER_APP_CODE = """
+from fastapi import APIRouter, FastAPI
+
+app = FastAPI()
+router = APIRouter(prefix="/folders")
+
+@router.get("/{folder_id}")
+def get_folder(folder_id: int):
+    return {}
+
+app.include_router(router)
+"""
+
+
 @pytest.fixture
 def temp_app_module(tmp_path):
     """Create a temporary module with a FastAPI app."""
@@ -293,6 +307,19 @@ class TestCheckCommand:
         captured = capsys.readouterr()
         assert "Policy:   testapp.GET.items" in captured.out
         assert "Source:   explicit" in captured.out
+
+    def test_resolves_included_router_route(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "routerapp.py").write_text(ROUTER_APP_CODE)
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        args = MockArgs(app="routerapp:app", root="testapp", method="GET", path="/folders/7")
+        result = cmd_check(args)
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert "Route:    GET /folders/{folder_id}" in captured.out
+        assert "Policy:   testapp.GET.folders.__folder_id" in captured.out
+        assert "'folder_id': '7'" in captured.out
 
     def test_unmatched_route_errors(self, temp_app_module, capsys):
         args = MockArgs(app=temp_app_module, root="testapp", method="GET", path="/nonexistent")

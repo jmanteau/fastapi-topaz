@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
+from ._routes import iter_routes, set_route_attr
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -181,7 +182,7 @@ def scan_routes(
         exclude_paths = DEFAULT_EXCLUDE_PATHS
 
     routes = []
-    for route in app.routes:
+    for route in iter_routes(app):
         if not hasattr(route, "methods") or not hasattr(route, "path"):
             continue
 
@@ -459,7 +460,7 @@ def annotate_openapi(
     """
     Annotate FastAPI routes with their resolved Topaz policy paths in OpenAPI.
 
-    Walks ``app.routes`` and resolves each route through the same policy
+    Walks every route (including included routers) and resolves each route through the same policy
     resolution chain as :func:`generate_rights_matrix` (explicit file when
     *policies_dir* is given > policy group > default policy > generated),
     then merges ``x-authz-policy`` and ``x-authz-source`` into each route's
@@ -482,7 +483,7 @@ def annotate_openapi(
     by_method_path = {(r.method, r.route_pattern): r for r in resolutions}
 
     annotated = 0
-    for route in app.routes:
+    for route in iter_routes(app):
         if not hasattr(route, "methods") or not hasattr(route, "path"):
             continue
         api_route = cast("APIRoute", route)
@@ -490,11 +491,15 @@ def annotate_openapi(
             resolution = by_method_path.get((method, api_route.path))
             if resolution is None:
                 continue
-            api_route.openapi_extra = {
-                **(api_route.openapi_extra or {}),
-                "x-authz-policy": resolution.resolved_policy_path,
-                "x-authz-source": resolution.resolution_source,
-            }
+            set_route_attr(
+                route,
+                "openapi_extra",
+                {
+                    **(api_route.openapi_extra or {}),
+                    "x-authz-policy": resolution.resolved_policy_path,
+                    "x-authz-source": resolution.resolution_source,
+                },
+            )
             annotated += 1
             break  # one annotation per route object
 

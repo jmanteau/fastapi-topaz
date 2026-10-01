@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Match
 
 from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
+from ._routes import iter_routes
 from .config import TopazConfig
 
 if TYPE_CHECKING:
@@ -190,7 +191,7 @@ class TopazMiddleware:
         if cached is not None:
             return cached
 
-        for route in app.routes:
+        for route in iter_routes(app):
             match, child_scope = route.matches(scope)
             if match == Match.FULL:
                 if (

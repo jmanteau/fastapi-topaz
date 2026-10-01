@@ -211,6 +211,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     """Resolve (and optionally evaluate) the policy for a concrete request."""
     from starlette.routing import Match
 
+    from ._routes import iter_routes
     from .codegen import generate_rights_matrix
 
     app = import_app(args.app)
@@ -234,7 +235,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     matched_route = None
     path_params: dict = {}
-    for route in app.routes:
+    for route in iter_routes(app):
         match, child_scope = route.matches(scope)
         if match == Match.FULL:
             matched_route = route

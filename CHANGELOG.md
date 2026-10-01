@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit events are now emitted from `check_decision` for all sources (middleware, dependency, manual), so dependency and manual checks are audited too; previously only the middleware emitted decision events
 - `AuditLogger(include_resource_context=...)` now defaults to `False`: resource context often carries user data (emails, names, document attributes) that should not land in logs unreviewed; set it to `True` explicitly to restore the previous behavior
 - Documented that the audit `client_ip` field trusts `x-forwarded-for` / `x-real-ip` headers, which are client-spoofable without a trusted reverse proxy
+- FastAPI 0.137.0 and 0.137.1 are excluded from the supported range: they store included routers as a tree but lack the `fastapi.routing.iter_route_contexts()` API needed to walk it
 
 ### Deprecated
 
@@ -73,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependencies now raise 500 on unresolvable or empty object IDs (missing path param, header, or query param) instead of silently checking against `object_id=""` in Topaz
 - Creating a second `PrometheusMetrics` instance no longer crashes with a duplicate-registration error; existing collectors are reused from the registry
 - `SkipMiddleware` is now detected anywhere in a route's resolved dependency tree (including nested sub-dependencies), so router-level skips work across FastAPI versions that do not merge router dependencies into `route.dependencies`
+- Routes registered via `include_router` are seen correctly on FastAPI >= 0.137, which stopped flattening included routers into `app.routes`: the middleware now resolves the route template (not the concrete URL) for the policy path and honors router-level `SkipMiddleware`, and `scan_routes` (`generate-policies`, `policy-diff`, `generate-rights-matrix`), `annotate_openapi`, and `fastapi-topaz check` no longer silently omit router routes
 
 ## [1.1.0] - 2026-02-13
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 from aserto.client import AuthorizerOptions, Identity, IdentityType
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 
 from fastapi_topaz import PolicyGroup, TopazConfig, normalize_hyphens
 from fastapi_topaz.codegen import (
@@ -101,6 +101,21 @@ class TestScanRoutes:
 
         assert "myapp.GET.aircraft_programs" in paths
         assert "myapp.GET.aircraft-programs" not in paths
+
+    def test_includes_routes_from_included_routers(self, config):
+        app = FastAPI()
+        router = APIRouter(prefix="/folders")
+
+        @router.get("/{folder_id}")
+        def get_folder(folder_id: int):
+            return {}
+
+        app.include_router(router)
+
+        routes = scan_routes(app, config.policy_path_root)
+        assert [(r["method"], r["path"], r["policy_path"]) for r in routes] == [
+            ("GET", "/folders/{folder_id}", "myapp.GET.folders.__folder_id")
+        ]
 
 
 class TestGeneratePolicies:
@@ -435,6 +450,21 @@ class TestAnnotateOpenapi:
         operation = schema["paths"]["/items"]["get"]
         assert operation["x-custom"] == "kept"
         assert operation["x-authz-policy"] == "myapp.GET.items"
+
+    def test_annotates_routes_from_included_routers(self, config):
+        app = FastAPI()
+        router = APIRouter(prefix="/folders")
+
+        @router.get("/{folder_id}")
+        def get_folder(folder_id: int):
+            return {}
+
+        app.include_router(router)
+
+        assert annotate_openapi(app, config) == 1
+        operation = app.openapi()["paths"]["/folders/{folder_id}"]["get"]
+        assert operation["x-authz-policy"] == "myapp.GET.folders.__folder_id"
+        assert operation["x-authz-source"] == "generated"
 
     def test_excluded_routes_not_annotated(self, sample_app, config):
         annotate_openapi(sample_app, config)
