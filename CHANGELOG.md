@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Policy generation, `policy-diff`, the rights matrix and the `check` CLI command now include frontend routes (one `GET` entry per mount path) and mounts (one entry each for `GET`, `POST`, `PUT`, `PATCH`, `DELETE`), which the middleware already authorizes; previously `policy-diff` reported them in sync while the middleware denied them at runtime
+- `TopazMiddleware` now fails closed with 403 for any breakage in FastAPI's private frontend matching internals, not only a missing matcher; other changes previously produced a 500
+- With a root frontend (`app.frontend("/")`), requests FastAPI answers with a trailing-slash redirect are no longer checked against the frontend policy, so a deny no longer replaces the redirect with a 403
+
+### Changed
+
+- Documented that on FastAPI 0.137+ `annotate_openapi` must run after routes are added to routers already passed to `include_router()`
+
+## [1.2.1] - 2026-10-01
+
+### Fixed
+
+- `TopazMiddleware` now authorizes FastAPI frontend routes (`app.frontend()` / `router.frontend()`), which FastAPI matches outside `app.routes`; previously they were passed through unchecked as if they were 404s. They use a prefix-only policy path from the mount path (e.g. `myapp.GET.app`), like mounts, and honor router-level `SkipMiddleware`. If FastAPI's private frontend matching internals change, the middleware fails closed with 403 for requests that match no regular route
+- `annotate_openapi` no longer writes annotations onto the original route of an included router: a router included under several prefixes could get another prefix's `x-authz-policy` after FastAPI rebuilt its route contexts. An unrecognized FastAPI route context layout now logs a warning instead of silently dropping annotations
+
+### Changed
+
+- Documented the excluded FastAPI 0.137.0 and 0.137.1 releases in the requirements
+- CI now also tests the lowest supported FastAPI (0.100)
+
 ## [1.2.0] - 2026-10-01
 
 ### Added
@@ -186,7 +208,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - aserto >= 0.32.2
 - Python >= 3.9
 
-[Unreleased]: https://github.com/jmanteau/fastapi-topaz/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/jmanteau/fastapi-topaz/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/jmanteau/fastapi-topaz/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/jmanteau/fastapi-topaz/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/jmanteau/fastapi-topaz/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/jmanteau/fastapi-topaz/releases/tag/v1.0.1

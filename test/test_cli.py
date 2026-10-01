@@ -321,6 +321,37 @@ class TestCheckCommand:
         assert "Policy:   testapp.GET.folders.__folder_id" in captured.out
         assert "'folder_id': '7'" in captured.out
 
+    @pytest.mark.skipif(not hasattr(FastAPI, "frontend"), reason="FastAPI without frontend routes")
+    def test_resolves_frontend_route(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "dist").mkdir()
+        (tmp_path / "frontendapp.py").write_text(
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            f"app.frontend('/app', directory={str(tmp_path / 'dist')!r})\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        args = MockArgs(app="frontendapp:app", root="testapp", method="GET", path="/app/x.js")
+        result = cmd_check(args)
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert "Route:    GET /app" in captured.out
+        assert "Policy:   testapp.GET.app" in captured.out
+
+    def test_resolves_mount(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "mountapp.py").write_text(
+            "from fastapi import FastAPI\napp = FastAPI()\napp.mount('/sub', FastAPI())\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        args = MockArgs(app="mountapp:app", root="testapp", method="GET", path="/sub/x")
+        result = cmd_check(args)
+        assert result == 0
+
+        captured = capsys.readouterr()
+        assert "Policy:   testapp.GET.sub" in captured.out
+
     def test_unmatched_route_errors(self, temp_app_module, capsys):
         args = MockArgs(app=temp_app_module, root="testapp", method="GET", path="/nonexistent")
         result = cmd_check(args)

@@ -18,7 +18,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Match
 
 from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
-from ._routes import iter_routes
+from ._routes import FrontendMatchError, iter_routes, match_frontend_route
 from .config import TopazConfig
 
 if TYPE_CHECKING:
@@ -200,6 +200,11 @@ class TopazMiddleware:
                 ):
                     self._route_cache[cache_key] = (route, child_scope)
                 return route, child_scope
+
+        # FastAPI serves frontend routes only when no regular route matches
+        frontend_route = match_frontend_route(app, scope)
+        if frontend_route is not None:
+            return frontend_route, {}
         return None
 
     def _resolve_policy(
@@ -276,7 +281,14 @@ class TopazMiddleware:
         path = scope.get("path", "/")
 
         # Match route manually
-        match_result = self._match_route(scope)
+        try:
+            match_result = self._match_route(scope)
+        except FrontendMatchError:
+            # Fail closed: the request may be served by an unauthorized frontend route
+            logger.exception("Cannot match frontend routes for %s %s; denying", method, path)
+            response = JSONResponse(status_code=403, content={"detail": "Forbidden"})
+            await response(scope, receive, send)
+            return
         route = match_result[0] if match_result else None
         path_params = match_result[1].get("path_params", {}) if match_result else {}
 

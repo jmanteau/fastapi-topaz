@@ -211,7 +211,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     """Resolve (and optionally evaluate) the policy for a concrete request."""
     from starlette.routing import Match
 
-    from ._routes import iter_routes
+    from ._routes import iter_routes, match_frontend_route
     from .codegen import generate_rights_matrix
 
     app = import_app(args.app)
@@ -241,6 +241,9 @@ def cmd_check(args: argparse.Namespace) -> int:
             matched_route = route
             path_params = child_scope.get("path_params", {})
             break
+    else:
+        # FastAPI serves frontend routes only when no regular route matches
+        matched_route = match_frontend_route(app, scope)
 
     if matched_route is None:
         print(f"Error: no route matches {method} {args.path}")

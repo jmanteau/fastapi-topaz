@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
 
+from starlette.routing import Mount
+
 from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
-from ._routes import iter_routes, set_route_attr
+from ._routes import iter_frontend_paths, iter_routes, set_route_attr
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -152,6 +154,9 @@ def _generate_policy_rego(
     return "\n".join(lines) + "\n"
 
 
+# A mount accepts every method; the middleware skips OPTIONS and HEAD by default
+_MOUNT_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
 DEFAULT_EXCLUDE_PATHS = {
     "/openapi.json",
     "/docs",
@@ -182,7 +187,26 @@ def scan_routes(
         exclude_paths = DEFAULT_EXCLUDE_PATHS
 
     routes = []
+
+    def add(method: str, path: str) -> None:
+        policy_path = _resolve_policy_path(policy_root, method, path, policy_path_normalizer)
+        routes.append(
+            {
+                "policy_path": policy_path,
+                "method": method,
+                "path": path,
+                "route_pattern": path,
+                "auth_type": "policy",  # Default, could be detected from dependencies
+            }
+        )
+
     for route in iter_routes(app):
+        if isinstance(getattr(route, "original_route", route), Mount):
+            if route.path not in exclude_paths:
+                for method in _MOUNT_METHODS:
+                    add(method, route.path)
+            continue
+
         if not hasattr(route, "methods") or not hasattr(route, "path"):
             continue
 
@@ -194,17 +218,12 @@ def scan_routes(
         for method in api_route.methods or []:
             if method in ("HEAD", "OPTIONS"):
                 continue
+            add(method, path)
 
-            policy_path = _resolve_policy_path(policy_root, method, path, policy_path_normalizer)
-            routes.append(
-                {
-                    "policy_path": policy_path,
-                    "method": method,
-                    "path": path,
-                    "route_pattern": path,
-                    "auth_type": "policy",  # Default, could be detected from dependencies
-                }
-            )
+    # Frontend routes serve GET and HEAD; HEAD is skipped as above
+    for path in iter_frontend_paths(app):
+        if path not in exclude_paths:
+            add("GET", path)
 
     return routes
 
@@ -467,7 +486,9 @@ def annotate_openapi(
     ``openapi_extra``. Existing ``openapi_extra`` keys are preserved.
 
     Call after route registration and before the first schema build (the
-    schema is cached on first access to ``app.openapi()``).
+    schema is cached on first access to ``app.openapi()``). This includes
+    routes added to a router after it was passed to ``include_router()``:
+    on FastAPI >= 0.137 their annotations are lost otherwise.
 
     Args:
         app: FastAPI application instance
