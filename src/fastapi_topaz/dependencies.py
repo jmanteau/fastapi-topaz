@@ -330,8 +330,10 @@ def get_authorized_resource(
     Args:
         config: Topaz configuration
         resource_fetcher: Function that takes (request) and returns resource or
-            None. Coroutine functions are awaited; sync functions run in a
-            threadpool so blocking I/O does not stall the event loop.
+            None. Coroutine functions and objects with an async ``__call__``
+            are awaited; sync functions run in a threadpool so blocking I/O
+            does not stall the event loop, and an awaitable they return (e.g.
+            from ``lambda r: fetch(r)``) is awaited too.
         object_type: Type of object (e.g., "document")
         relation: Relation to check (e.g., "can_write")
         object_id: Static ID, callable, or None (uses path param "id")
@@ -357,7 +359,11 @@ def get_authorized_resource(
         ```
     """
     _reject_empty_static_object_id(object_id)
-    is_async_fetcher = inspect.iscoroutinefunction(resource_fetcher)
+    # An object with async __call__ is a coroutine function only through __call__
+    call = getattr(resource_fetcher, "__call__", None)
+    is_async_fetcher = inspect.iscoroutinefunction(resource_fetcher) or (
+        inspect.iscoroutinefunction(call)
+    )
 
     async def dependency(request: Request) -> T:
         # Resolve object_id
@@ -395,6 +401,9 @@ def get_authorized_resource(
             )
         else:
             resource = await run_in_threadpool(functools.partial(resource_fetcher, request))
+        # A sync wrapper such as lambda r: fetch(r) returns a coroutine
+        if inspect.isawaitable(resource):
+            resource = await resource
 
         if resource is None:
             raise HTTPException(

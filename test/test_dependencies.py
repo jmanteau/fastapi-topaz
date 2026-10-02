@@ -927,6 +927,50 @@ class TestGetAuthorizedResource:
         assert response.status_code == 200
         assert response.json()["name"] == "Test"
 
+    @staticmethod
+    def _fetch_app(config, fetcher) -> TestClient:
+        app = FastAPI()
+
+        @app.get("/docs/{id}")
+        def route(
+            id: int,
+            doc=Depends(get_authorized_resource(config, fetcher, "document", "can_read")),
+        ):
+            return {"name": doc.name}
+
+        return TestClient(app)
+
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    def test_async_callable_object_fetcher(self, topaz_config, patch_client):
+        """An object with async __call__ is awaited, not passed through as a coroutine."""
+
+        class Fetcher:
+            async def __call__(self, request):
+                return FakeDocument(id=1, name="From object", owner="alice")
+
+        response = self._fetch_app(topaz_config, Fetcher()).get("/docs/1")
+        assert response.status_code == 200
+        assert response.json()["name"] == "From object"
+
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    def test_sync_wrapper_returning_coroutine(self, topaz_config, patch_client):
+        """A lambda wrapping an async fetcher returns a coroutine, which is awaited."""
+
+        async def fetch(request):
+            return FakeDocument(id=1, name="From wrapper", owner="alice")
+
+        response = self._fetch_app(topaz_config, lambda r: fetch(r)).get("/docs/1")
+        assert response.status_code == 200
+        assert response.json()["name"] == "From wrapper"
+
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    def test_wrapped_async_fetcher_returning_none_is_404(self, topaz_config, patch_client):
+        async def fetch(request):
+            return None
+
+        response = self._fetch_app(topaz_config, lambda r: fetch(r)).get("/docs/1")
+        assert response.status_code == 404
+
     def test_returns_404_when_resource_not_found(self, topaz_config, patch_client):
         """Should return 404 when resource_fetcher returns None."""
 

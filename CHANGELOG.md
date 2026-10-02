@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `get_authorized_resource` awaits fetchers that are objects with an async `__call__`, and awaitables returned by sync wrappers such as `lambda r: fetch(r)`; the endpoint previously received an un-awaited coroutine and the 404 for a missing resource was skipped
 - `annotate_openapi`, `generate_rights_matrix`, `policy-diff` and the `check` CLI command now report routes `TopazMiddleware` never checks as `skipped`, instead of as authorized by the resolution chain. That covers `@skip_middleware`, `Depends(SkipMiddleware)` at route or router level (frontend routes included), and the installed middleware's `exclude_paths` and `exclude_methods`, with `exclude_paths` matched against route templates. Skipped operations get `x-authz-source: skipped` and no `x-authz-policy`. `policy-diff` no longer reports a skipped route as missing
 
 - `require_policy_auto` now includes `include_router()` prefixes on FastAPI 0.137+; it previously checked the un-prefixed route path (e.g. `myapp.POST` instead of `myapp.POST.api.folders` for a router included under `/api/folders`). When the route path cannot be resolved it fails with 500 instead of falling back to the un-prefixed path
