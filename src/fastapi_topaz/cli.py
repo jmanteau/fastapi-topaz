@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -18,14 +19,14 @@ def import_app(app_path: str):
         module_path, attr_name = app_path.rsplit(":", 1)
     except ValueError:
         print(f"Error: Invalid app path '{app_path}'. Use format 'module.path:app'")
-        sys.exit(1)
+        sys.exit(2)
 
     try:
         module = importlib.import_module(module_path)
         return getattr(module, attr_name)
     except (ImportError, AttributeError) as e:
         print(f"Error importing app: {e}")
-        sys.exit(1)
+        sys.exit(2)
 
 
 def import_config(config_path: str):
@@ -36,12 +37,12 @@ def import_config(config_path: str):
         return getattr(module, attr_name)
     except Exception as e:
         print(f"Error importing config: {e}")
-        sys.exit(1)
+        sys.exit(2)
 
 
 def cmd_generate_policies(args: argparse.Namespace) -> int:
     """Generate policy skeletons from FastAPI routes."""
-    from .codegen import PolicyTemplate, generate_policies
+    from .codegen import PolicyTemplate, _policy_file, generate_policies
 
     app = import_app(args.app)
 
@@ -74,11 +75,21 @@ def cmd_generate_policies(args: argparse.Namespace) -> int:
         return 0
 
     output = Path(args.output) if args.output else Path("policies")
-    policies = generate_policies(app, config, output_dir=output, template=template)
+    # efficiency: a write-less pass lists target files so pre-existing ones can be reported
+    existing = set()
+    if not args.overwrite:
+        planned = generate_policies(app, config, template=template)
+        existing = {p for p in planned if _policy_file(output, p).exists()}
+    policies = generate_policies(
+        app, config, output_dir=output, template=template, overwrite=args.overwrite
+    )
 
     print(f"Generated {len(policies)} policies in {output}/")
     for path in sorted(policies.keys()):
-        print(f"  OK {path}")
+        if path in existing:
+            print(f"  SKIP {path} (exists, use --overwrite)")
+        else:
+            print(f"  OK {path}")
 
     return 0
 
@@ -192,8 +203,14 @@ def cmd_policy_map(args: argparse.Namespace) -> int:
     from .codegen import scan_routes
 
     app = import_app(args.app)
-    root = args.root or "app"
-    routes = scan_routes(app, root)
+    normalizer = None
+    if args.config:
+        config = import_config(args.config)
+        root = config.policy_path_root
+        normalizer = config.policy_path_normalizer
+    else:
+        root = args.root or "app"
+    routes = scan_routes(app, root, policy_path_normalizer=normalizer)
 
     if args.format == "markdown":
         print("| Route | Method | Policy Path | Auth Type |")
@@ -315,6 +332,7 @@ def main() -> int:
     gen.add_argument("--config", help="TopazConfig (module:attribute)")
     gen.add_argument("--root", help="Policy path root (default: app)")
     gen.add_argument("--dry-run", action="store_true", help="Preview without writing")
+    gen.add_argument("--overwrite", action="store_true", help="Replace existing policy files")
     gen.set_defaults(func=cmd_generate_policies)
 
     # policy-diff
@@ -356,11 +374,18 @@ def main() -> int:
     # policy-map
     pmap = subparsers.add_parser("policy-map", help="Generate route-to-policy mapping")
     pmap.add_argument("--app", required=True, help="FastAPI app (module:attribute)")
+    pmap.add_argument("--config", help="TopazConfig (module:attribute)")
     pmap.add_argument("--root", help="Policy path root (default: app)")
     pmap.add_argument("--format", choices=["text", "markdown"], default="text")
     pmap.set_defaults(func=cmd_policy_map)
 
     args = parser.parse_args()
+
+    # The console script does not put the working directory on sys.path, so
+    # "--app myapp:app" would not find ./myapp.py without this
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
 
     if not args.command:
         parser.print_help()

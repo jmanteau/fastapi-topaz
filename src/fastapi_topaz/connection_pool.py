@@ -92,11 +92,11 @@ class ConnectionPool:
         connection_timeout: Seconds to establish a new connection
         max_idle_time: Seconds before closing idle connections
         idle_check_interval: Seconds between idle cleanup runs
-        health_check_interval: Seconds between health checks
-        health_check_timeout: Seconds for health check to complete
+        health_check_interval: Has no effect (no health checks are run)
+        health_check_timeout: Has no effect (no health checks are run)
         eager_init: Create min_connections at initialization
-        retry_on_failure: Retry failed connection creation
-        max_retries: Maximum connection creation retries
+        retry_on_failure: Has no effect (connection creation is not retried)
+        max_retries: Has no effect (connection creation is not retried)
     """
 
     # Pool sizing
@@ -338,7 +338,12 @@ class ConnectionPool:
         )
 
     async def close(self) -> None:
-        """Close all connections and shut down the pool."""
+        """Shut down the pool.
+
+        Idle connections are closed now. Connections still in use stay open
+        until their holder calls :meth:`release`, which closes them because
+        the pool is closed.
+        """
         self._closed = True
 
         # Cancel cleanup task
@@ -349,20 +354,16 @@ class ConnectionPool:
             except asyncio.CancelledError:
                 pass
 
-        # Clear idle queue
+        # Close idle connections; busy ones are closed on release()
         while True:
             try:
-                self._idle.get_nowait()
+                conn = self._idle.get_nowait()
             except asyncio.QueueEmpty:
                 break
-
-        # Close and clear all connections
-        for conn in list(self._connections):
+            self._connections.discard(conn)
             try:
                 await conn.client.close()
             except Exception as e:
                 logger.warning(f"Error closing pooled connection: {e}")
-        self._connections.clear()
-        self._busy.clear()
 
         logger.info("Connection pool closed")

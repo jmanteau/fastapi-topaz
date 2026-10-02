@@ -85,6 +85,8 @@ async def shutdown():
     await config.connection_pool.close()
 ```
 
+`close()` closes idle connections immediately. A connection that is acquired when the pool closes stays open until its holder calls `release()`, which then closes it instead of returning it to the pool.
+
 ## Health Check Integration
 
 ```python
@@ -114,11 +116,11 @@ async def health():
 | connection_timeout | float | 10.0 | Establishment timeout |
 | max_idle_time | float | 300.0 | Seconds before closing idle |
 | idle_check_interval | float | 60.0 | Interval for idle checks |
-| health_check_interval | float | 30.0 | Interval for health checks |
-| health_check_timeout | float | 5.0 | Health check timeout |
+| health_check_interval | float | 30.0 | Has no effect (accepted for compatibility) |
+| health_check_timeout | float | 5.0 | Has no effect (accepted for compatibility) |
 | eager_init | bool | False | Create min_connections at startup |
-| retry_on_failure | bool | True | Retry failed creation |
-| max_retries | int | 3 | Max creation retries |
+| retry_on_failure | bool | True | Has no effect (accepted for compatibility) |
+| max_retries | int | 3 | Has no effect (accepted for compatibility) |
 
 ## Metrics
 

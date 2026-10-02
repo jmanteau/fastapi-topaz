@@ -2091,3 +2091,169 @@ class TestExposeDenyReason:
 
         assert response.status_code == 403
         assert response.json() == {"detail": "Forbidden"}
+
+
+class TestTrustedContextPrecedence:
+    """Regression: client-controlled path params never override trusted context.
+
+    Merge order is path_params < static resource_context < resource_context_provider.
+    """
+
+    @pytest.fixture
+    def tenant_config(self, authorizer_options, identity_provider):
+        return TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            resource_context_provider=lambda req: {"tenant_id": "trusted-tenant"},
+        )
+
+    def test_dependency_provider_beats_path_param(self, tenant_config, patch_client):
+        app = FastAPI()
+
+        @app.get("/tenants/{tenant_id}/docs/{doc_id}")
+        def route(_=Depends(require_policy_allowed(tenant_config, "test"))):
+            return {"status": "ok"}
+
+        TestClient(app).get("/tenants/attacker/docs/7")
+
+        ctx = patch_client.decisions.call_args.kwargs["resource_context"]
+        assert ctx["tenant_id"] == "trusted-tenant"
+        # A path param still fills keys the provider does not set
+        assert ctx["doc_id"] == "7"
+
+    def test_dependency_static_context_beats_path_param(self, topaz_config, patch_client):
+        app = FastAPI()
+        dep = require_policy_allowed(topaz_config, "test", resource_context={"tenant_id": "fixed"})
+
+        @app.get("/tenants/{tenant_id}")
+        def route(_=Depends(dep)):
+            return {"status": "ok"}
+
+        TestClient(app).get("/tenants/attacker")
+
+        ctx = patch_client.decisions.call_args.kwargs["resource_context"]
+        assert ctx["tenant_id"] == "fixed"
+
+    def test_provider_beats_static_context(self, tenant_config, patch_client):
+        app = FastAPI()
+        dep = require_policy_allowed(tenant_config, "test", resource_context={"tenant_id": "x"})
+
+        @app.get("/test")
+        def route(_=Depends(dep)):
+            return {"status": "ok"}
+
+        TestClient(app).get("/test")
+
+        ctx = patch_client.decisions.call_args.kwargs["resource_context"]
+        assert ctx["tenant_id"] == "trusted-tenant"
+
+    async def test_is_allowed_provider_beats_path_param(self, tenant_config, patch_client):
+        app = FastAPI()
+
+        @app.get("/tenants/{tenant_id}/docs/{doc_id}")
+        async def route(request: Request):
+            return {"ok": await tenant_config.is_allowed(request, "testapp.GET.docs")}
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.get("/tenants/attacker/docs/7")
+
+        ctx = patch_client.decisions.call_args.kwargs["resource_context"]
+        assert ctx["tenant_id"] == "trusted-tenant"
+        assert ctx["doc_id"] == "7"
+
+
+class TestEmptyHierarchyRejected:
+    """Regression: an empty checks list made mode="all" vacuously allow everything."""
+
+    def test_factory_raises_for_empty_checks(self, topaz_config):
+        with pytest.raises(ValueError, match="at least one check"):
+            require_rebac_hierarchy(topaz_config, [])
+
+    async def test_check_hierarchy_raises_without_calling_topaz(self, topaz_config, patch_client):
+        request = Mock(spec=Request)
+        request.path_params = {}
+        with pytest.raises(ValueError, match="at least one check"):
+            await topaz_config.check_hierarchy(request, [])
+        patch_client.decisions.assert_not_called()
+
+
+class TestAuthorizeBeforeFetch:
+    """Regression: get_authorized_resource fetched first, so 404 vs 403 leaked
+    whether a resource exists to unauthorized callers."""
+
+    def _app(self, config, fetcher):
+        app = FastAPI()
+
+        @app.get("/docs/{id}")
+        async def route(
+            doc=Depends(get_authorized_resource(config, fetcher, "document", "can_read")),
+        ):
+            return {"name": doc.name}
+
+        return TestClient(app)
+
+    def test_denied_nonexistent_returns_403_without_fetch(self, topaz_config, patch_client_denied):
+        calls = []
+
+        def fetcher(req):
+            calls.append(req)
+            return None
+
+        response = self._app(topaz_config, fetcher).get("/docs/missing")
+
+        assert response.status_code == 403
+        assert calls == []
+
+    def test_allowed_missing_returns_404(self, topaz_config, patch_client):
+        response = self._app(topaz_config, lambda req: None).get("/docs/missing")
+        assert response.status_code == 404
+
+    def test_async_fetcher_is_awaited(self, topaz_config, patch_client):
+        async def fetcher(req):
+            return FakeDocument(id=1, name="async-doc", owner="alice")
+
+        response = self._app(topaz_config, fetcher).get("/docs/1")
+
+        assert response.status_code == 200
+        assert response.json()["name"] == "async-doc"
+
+    def test_sync_fetcher_runs_off_event_loop_thread(self, topaz_config, patch_client):
+        import threading
+
+        seen = {}
+        app = FastAPI()
+
+        def fetcher(req):
+            seen["fetcher"] = threading.get_ident()
+            return FakeDocument(id=1, name="sync-doc", owner="alice")
+
+        @app.get("/docs/{id}")
+        async def route(
+            doc=Depends(get_authorized_resource(topaz_config, fetcher, "document", "can_read")),
+        ):
+            seen["loop"] = threading.get_ident()
+            return {"name": doc.name}
+
+        response = TestClient(app).get("/docs/1")
+
+        assert response.status_code == 200
+        assert seen["fetcher"] != seen["loop"]
+
+
+class TestEmptyStaticObjectIdRejected:
+    """A static object_id="" would check the empty object on every request."""
+
+    def test_require_rebac_allowed_rejects_empty_static_id(self, topaz_config):
+        with pytest.raises(ValueError, match="object_id"):
+            require_rebac_allowed(topaz_config, "document", "can_read", object_id="")
+
+    def test_get_authorized_resource_rejects_empty_static_id(self, topaz_config):
+        with pytest.raises(ValueError, match="object_id"):
+            get_authorized_resource(
+                topaz_config, lambda r: None, "document", "can_read", object_id=""
+            )
+
+    def test_non_empty_static_id_accepted(self, topaz_config):
+        require_rebac_allowed(topaz_config, "document", "can_read", object_id="doc-1")

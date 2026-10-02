@@ -77,7 +77,9 @@ class TestPrometheusMetrics:
 
     def test_include_policy_path_option(self):
         """Should accept include_policy_path option."""
-        metrics = PrometheusMetrics(include_policy_path=True)
+        # Own prefix: the default "topaz" collectors on the global registry
+        # are already registered without the policy_path label
+        metrics = PrometheusMetrics(prefix="policy_path_opt", include_policy_path=True)
         assert metrics.include_policy_path is True
 
     def test_works_without_prometheus_client(self):
@@ -138,6 +140,17 @@ class TestPrometheusMetrics:
         assert (
             registry.get_sample_value("shared_test_cache_hits_total", {"source": "middleware"}) == 2
         )
+
+
+    def test_conflicting_labels_on_shared_registry_raise_at_construction(self):
+        """Regression: reusing a collector with different labels made every
+        later .labels() call fail at request time."""
+        prometheus_client = pytest.importorskip("prometheus_client")
+        registry = prometheus_client.CollectorRegistry()
+        PrometheusMetrics(prefix="conflict_test", registry=registry)
+
+        with pytest.raises(ValueError, match="conflict_test_auth_requests_total"):
+            PrometheusMetrics(prefix="conflict_test", registry=registry, include_policy_path=True)
 
 
 class TestPrometheusMetricsIntegration:

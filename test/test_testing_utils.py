@@ -333,3 +333,64 @@ class TestRulePrecedence:
         # Allow rule matches first, so public is allowed
         result = await mock_allow_first.check_decision(Mock(), "app.public", "allowed", {})
         assert result is True
+
+
+def _real_config():
+    from aserto.client import AuthorizerOptions, Identity, IdentityType
+
+    from fastapi_topaz import TopazConfig
+
+    return TopazConfig(
+        authorizer_options=AuthorizerOptions(url="localhost:8282"),
+        policy_path_root="app",
+        identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_SUB, value="real"),
+        policy_instance_name="app",
+    )
+
+
+class TestInstallMockCoverage:
+    """Regression: install_mock left the batch path and identity_provider real,
+    so batch checks hit the wire and the middleware used the real identity."""
+
+    async def test_batch_relations_use_mock_rules(self, monkeypatch):
+        config = _real_config()
+        mock = MockTopazConfig(
+            default_decision=False, rules=[when_relation("document", "can_read").allow()]
+        )
+        install_mock(monkeypatch, mock, config)
+
+        request = Mock()
+        request.path_params = {}
+        results = await config.check_relations(
+            request, "document", "42", ["can_read", "can_write"], batch=True
+        )
+
+        assert results == {"can_read": True, "can_write": False}
+
+    def test_none_identity_makes_middleware_return_401(self, monkeypatch):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from fastapi_topaz import TopazMiddleware
+
+        config = _real_config()
+        install_mock(monkeypatch, MockTopazConfig(identity_returns=None), config)
+        app = FastAPI()
+
+        @app.get("/x")
+        def route():
+            return {}
+
+        app.add_middleware(TopazMiddleware, config=config)
+
+        assert TestClient(app).get("/x").status_code == 401
+
+    def test_string_identity_becomes_sub(self, monkeypatch):
+        from aserto.client import IdentityType
+
+        config = _real_config()
+        install_mock(monkeypatch, MockTopazConfig(identity_returns="alice"), config)
+
+        identity = config.identity_provider(Mock())
+        assert identity.type == IdentityType.IDENTITY_TYPE_SUB
+        assert identity.value == "alice"

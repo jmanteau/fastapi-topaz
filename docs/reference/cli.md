@@ -8,6 +8,8 @@ Command-line tools for policy generation and validation.
 pip install fastapi-topaz
 ```
 
+Commands import the app and config with `module:attribute` paths. The current working directory is added to `sys.path`, so `--app myapp:app` finds `./myapp.py` when run from the project root. If the app or config cannot be imported, the command exits with code 2.
+
 ## Commands
 
 ### generate-policies
@@ -28,6 +30,8 @@ Options:
 | `--overwrite` | No | Overwrite existing policy files |
 | `--dry-run` | No | Print policies without writing files |
 | `--format` | No | Output format: `nested` (default) or `flat` |
+
+Existing policy files are kept by default and reported as `SKIP`; pass `--overwrite` to replace them.
 
 Example:
 
@@ -102,7 +106,8 @@ Options:
 | Option | Required | Description |
 |--------|----------|-------------|
 | `--app` | Yes | FastAPI app import path |
-| `--config` | No | TopazConfig import path |
+| `--config` | No | TopazConfig import path; its `policy_path_root` and `policy_path_normalizer` are used for the policy paths |
+| `--root` | No | Policy path root when `--config` is not given (default: app) |
 | `--format` | No | Output format: `text`, `json`, `markdown` |
 | `--policies` | No | Check against existing policies |
 
@@ -159,7 +164,7 @@ With `--live`, a `Decision: allowed` or `Decision: denied` line is appended. Exi
 |------|---------|
 | 0 | Success |
 | 1 | Policy mismatch found (missing or orphaned) |
-| 2 | Invalid arguments or configuration |
+| 2 | Invalid arguments or configuration, including an app or config that cannot be imported |
 
 ## Environment Variables
 

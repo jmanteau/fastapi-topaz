@@ -212,9 +212,17 @@ class CircuitBreaker:
             self._failure_count = 0
 
             if self._state == CircuitState.HALF_OPEN:
+                self._half_open_requests = max(0, self._half_open_requests - 1)
                 self._success_count += 1
                 if self._success_count >= self.success_threshold:
                     await self._transition_to(CircuitState.CLOSED, "test_succeeded")
+
+    def release_probe(self) -> None:
+        """Free a half-open probe slot for a call that ended without a verdict."""
+        # Sync and lock-free so it is safe while CancelledError unwinds; all
+        # mutations run on the event loop thread.
+        if self._state == CircuitState.HALF_OPEN and self._half_open_requests > 0:
+            self._half_open_requests -= 1
 
     async def record_failure(self, exception: Exception) -> None:
         """Record a failed authorization call."""

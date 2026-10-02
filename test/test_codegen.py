@@ -37,10 +37,14 @@ requires_frontend = pytest.mark.skipif(
 )
 
 
+# Docs routes are scanned by default; these fixtures count only app routes
+NO_DOCS = {"openapi_url": None, "docs_url": None, "redoc_url": None}
+
+
 @pytest.fixture
 def sample_app():
     """Sample FastAPI app with CRUD routes for testing policy generation."""
-    app = FastAPI()
+    app = FastAPI(**NO_DOCS)
 
     @app.get("/documents")
     def list_docs():
@@ -109,7 +113,7 @@ class TestScanRoutes:
         assert "myapp.GET.aircraft-programs" not in paths
 
     def test_includes_routes_from_included_routers(self, config):
-        app = FastAPI()
+        app = FastAPI(**NO_DOCS)
         router = APIRouter(prefix="/folders")
 
         @router.get("/{folder_id}")
@@ -150,6 +154,17 @@ class TestGeneratePolicies:
             rego_files = list(output_path.rglob("*.rego"))
             assert len(rego_files) == len(policies)
 
+    def test_existing_file_kept_unless_overwrite(self, sample_app, config, tmp_path):
+        policies = generate_policies(sample_app, config, output_dir=tmp_path)
+        target = tmp_path / f"{next(iter(policies)).replace('.', '/')}.rego"
+        target.write_text("# custom policy\n")
+
+        generate_policies(sample_app, config, output_dir=tmp_path)
+        assert target.read_text() == "# custom policy\n"
+
+        generate_policies(sample_app, config, output_dir=tmp_path, overwrite=True)
+        assert target.read_text() == policies[next(iter(policies))]
+
     def test_custom_template(self, sample_app, config):
         template = PolicyTemplate(
             default_decision=True,
@@ -171,7 +186,7 @@ class TestFrontendAndMountRoutes:
 
     @requires_frontend
     def test_scans_frontend_routes(self, config, dist):
-        app = FastAPI()
+        app = FastAPI(**NO_DOCS)
         app.frontend("/app", directory=dist)
         router = APIRouter()
         router.frontend("/", directory=dist)
@@ -191,7 +206,7 @@ class TestFrontendAndMountRoutes:
 
     @requires_frontend
     def test_policy_diff_reports_missing_frontend_policy(self, config, dist):
-        app = FastAPI()
+        app = FastAPI(**NO_DOCS)
         app.frontend("/app", directory=dist)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -202,7 +217,7 @@ class TestFrontendAndMountRoutes:
     def test_frontend_layout_change_fails_loudly(self, dist, monkeypatch):
         from fastapi.routing import APIRouter as FastAPIRouter
 
-        app = FastAPI()
+        app = FastAPI(**NO_DOCS)
         app.frontend("/app", directory=dist)
         monkeypatch.delattr(FastAPIRouter, "_iter_low_priority_routes")
 
@@ -210,7 +225,7 @@ class TestFrontendAndMountRoutes:
             iter_frontend_paths(app)
 
     def test_scans_mount_for_every_authorized_method(self, config):
-        app = FastAPI()
+        app = FastAPI(**NO_DOCS)
         app.mount("/sub", FastAPI())
 
         routes = scan_routes(app, config.policy_path_root)
@@ -223,7 +238,7 @@ class TestFrontendAndMountRoutes:
         ]
 
     def test_skips_websocket_routes(self, config):
-        app = FastAPI()
+        app = FastAPI(**NO_DOCS)
 
         @app.websocket("/ws")
         async def ws(websocket):
@@ -570,3 +585,164 @@ class TestAnnotateOpenapi:
         for route in sample_app.routes:
             if getattr(route, "path", None) == "/openapi.json":
                 assert getattr(route, "openapi_extra", None) is None
+
+
+def _write_policy(root: Path, policy_path: str) -> None:
+    path = root / f"{policy_path.replace('.', '/')}.rego"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"package {policy_path}\n")
+
+
+class TestPolicyDiffFirstGroupDecides:
+    """Regression: policy_diff fell through to later groups or the default
+    when the first matching group had no file; the middleware never does."""
+
+    def test_first_group_without_file_is_missing(self, config, tmp_path):
+        app = FastAPI(**NO_DOCS)
+
+        @app.get("/admin/jobs")
+        def jobs():
+            return []
+
+        config.policy_groups = [
+            PolicyGroup(url_pattern=r"^/admin/", policy_path="myapp.admin_strict"),
+            PolicyGroup(url_pattern=r"^/admin/", policy_path="myapp.admin_loose"),
+        ]
+        config.default_policy = "myapp.defaults.open"
+        _write_policy(tmp_path, "myapp.admin_loose")
+        _write_policy(tmp_path, "myapp.defaults.open")
+
+        diff = policy_diff(app, config, tmp_path)
+
+        assert [m.policy_path for m in diff.missing] == ["myapp.GET.admin.jobs"]
+        assert diff.group_covered == []
+        assert "myapp.GET.admin.jobs" not in diff.default_covered
+
+    def test_first_group_with_file_is_covered(self, config, tmp_path):
+        app = FastAPI(**NO_DOCS)
+
+        @app.get("/admin/jobs")
+        def jobs():
+            return []
+
+        config.policy_groups = [
+            PolicyGroup(url_pattern=r"^/admin/", policy_path="myapp.admin_strict"),
+        ]
+        _write_policy(tmp_path, "myapp.admin_strict")
+
+        diff = policy_diff(app, config, tmp_path)
+
+        assert diff.group_covered == ["myapp.GET.admin.jobs"]
+
+
+class TestDocsRoutesScannedByDefault:
+    """Codegen lists docs routes because the middleware authorizes them."""
+
+    def test_docs_routes_listed(self, config):
+        routes = scan_routes(FastAPI(), config.policy_path_root)
+        pairs = {(r["method"], r["path"]) for r in routes}
+        assert ("GET", "/docs") in pairs
+        assert ("GET", "/openapi.json") in pairs
+
+    def test_explicit_exclude_still_works(self, config):
+        routes = scan_routes(FastAPI(), config.policy_path_root, exclude_paths={"/docs"})
+        pairs = {(r["method"], r["path"]) for r in routes}
+        assert ("GET", "/docs") not in pairs
+        assert ("GET", "/openapi.json") in pairs
+
+
+class TestTypedPathParams:
+    """Regression: {x:path} produced a ':' in the policy path and package line."""
+
+    def test_converter_stripped_from_policy_path_and_package(self, config):
+        app = FastAPI(**NO_DOCS)
+
+        @app.get("/files/{name:path}")
+        def get_file(name: str):
+            return {}
+
+        @app.get("/items/{id:int}")
+        def get_item(id: int):
+            return {}
+
+        policies = generate_policies(app, config)
+
+        assert "myapp.GET.files.__name" in policies
+        assert "myapp.GET.items.__id" in policies
+        for path, rego in policies.items():
+            assert ":" not in path
+            assert ":" not in rego.splitlines()[0]
+        assert "input.resource.name" in policies["myapp.GET.files.__name"]
+
+    def test_untyped_param_unchanged(self, config):
+        assert config.policy_path_for("GET", "/items/{id}") == "myapp.GET.items.__id"
+
+
+class TestSkeletonsSkipCoveredRoutes:
+    """Regression: skeletons for group/default-covered routes were dead
+    per-route files that could replace stricter shared policies."""
+
+    def _app(self):
+        app = FastAPI(**NO_DOCS)
+
+        @app.get("/admin/jobs")
+        def jobs():
+            return []
+
+        @app.get("/public")
+        def public():
+            return []
+
+        return app
+
+    def test_group_covered_route_gets_no_skeleton(self, config):
+        config.policy_groups = [PolicyGroup(url_pattern=r"^/admin/", policy_path="myapp.admin")]
+
+        policies = generate_policies(self._app(), config)
+
+        assert "myapp.GET.admin.jobs" not in policies
+        # An uncovered route still gets one, and the check policy is always generated
+        assert "myapp.GET.public" in policies
+        assert "myapp.check" in policies
+
+    def test_default_covered_route_gets_no_skeleton(self, config):
+        config.default_policy = "myapp.defaults.open"
+
+        policies = generate_policies(self._app(), config)
+
+        assert set(policies) == {"myapp.check"}
+
+
+class TestAnnotateOpenapiPerMethod:
+    """One route object with several methods can resolve differently per method."""
+
+    def _app(self):
+        app = FastAPI()
+
+        @app.api_route("/items", methods=["POST", "GET"])
+        def items():
+            return []
+
+        return app
+
+    def test_differing_methods_written_as_sorted_maps(self, config, tmp_path):
+        app = self._app()
+        _write_policy(tmp_path, "myapp.GET.items")
+        config.default_policy = "myapp.defaults.open"
+
+        annotate_openapi(app, config, policies_dir=tmp_path)
+
+        op = app.openapi()["paths"]["/items"]["get"]
+        assert op["x-authz-policy"] == {"GET": "myapp.GET.items", "POST": "myapp.defaults.open"}
+        assert op["x-authz-source"] == {"GET": "explicit", "POST": "default"}
+        assert list(op["x-authz-policy"]) == ["GET", "POST"]
+
+    def test_agreeing_methods_written_as_strings(self, config):
+        app = self._app()
+        config.default_policy = "myapp.defaults.open"
+
+        annotate_openapi(app, config)
+
+        op = app.openapi()["paths"]["/items"]["post"]
+        assert op["x-authz-policy"] == "myapp.defaults.open"
+        assert op["x-authz-source"] == "default"

@@ -12,10 +12,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Policy generation, `policy-diff`, the rights matrix and the `check` CLI command now include frontend routes (one `GET` entry per mount path) and mounts (one entry each for `GET`, `POST`, `PUT`, `PATCH`, `DELETE`), which the middleware already authorizes; previously `policy-diff` reported them in sync while the middleware denied them at runtime
 - `TopazMiddleware` now fails closed with 403 for any breakage in FastAPI's private frontend matching internals, not only a missing matcher; other changes previously produced a 500
 - With a root frontend (`app.frontend("/")`), requests FastAPI answers with a trailing-slash redirect are no longer checked against the frontend policy, so a deny no longer replaces the redirect with a 403
+- The circuit breaker no longer locks up in half-open: a successful probe now frees its slot, so with the defaults (`success_threshold=2`, `half_open_max_requests=1`) the second probe is allowed and the circuit closes. A probe that is cancelled or fails with a non-failure gRPC code (e.g. `INVALID_ARGUMENT`) also frees its slot instead of forcing the fallback forever
+- A decision-cache write error (e.g. `OSError` from a custom backend) in `check_decision` or batched `check_relations` now propagates and fails closed; previously it counted as a breaker failure and could serve a stale cached allow over a fresh deny
+- `generate_policies` and `fastapi-topaz generate-policies` no longer overwrite existing `.rego` files. Behavior change: existing files are skipped (the CLI prints `SKIP`) unless you pass `overwrite=True` / `--overwrite`, which the docs already described
+- Decision cache keys now hash a JSON list of identity type, identity value, policy instance, policy path, decision and resource context; previously `:`-joined fields could collide (e.g. `("a:b", "c")` and `("a", "b:c")`), and identities of different types with the same value, or configs with different policy instances sharing one cache, could read each other's decisions. The stale fallback cache is scoped the same way
+- `DecisionCache` with `max_size` below 10 no longer grows without bound (eviction removed `max_size // 10 == 0` entries); `max_size < 1` now raises `ValueError`
+- `require_rebac_hierarchy([])` and `TopazConfig.check_hierarchy(request, [])` now raise `ValueError`; an empty hierarchy previously allowed every request
+- `get_authorized_resource` now authorizes before calling the fetcher, so a denied request returns 403 whether or not the resource exists (previously a 404 revealed which IDs exist); an allowed request for a missing resource returns 404. Async fetchers are awaited and sync fetchers run in the threadpool instead of blocking the event loop
+- An audit handler that raises, or an event whose resource context JSON cannot serialize, no longer turns an authorization decision into a 500; the error is logged and the response is unchanged. `AuditEvent.to_json()` stringifies unsupported values
+- Audit events redact `identity.value` for `IDENTITY_TYPE_JWT` identities, and `include_request_headers` also redacts `proxy-authorization`, `x-api-key`, `x-auth-token` and `x-csrf-token`. DEBUG logs in the dependencies no longer include the identity value
+- Two `PrometheusMetrics` instances on one registry with the same prefix and different label options now raise `ValueError` at construction, naming the metric and both label sets; previously the second instance reused collectors with the wrong labels and failed on every request
+- `policy_diff` resolves a route by the first matching policy group only, like the middleware: a missing file for that group reports the route missing instead of falling through to a later group or the default policy
+- Typed path parameters (`{path:path}`, `{id:int}`) no longer leave the converter in policy paths and generated `package` lines (`myapp.GET.files.__path`, not `__path:path`), and codegen reads their names correctly
+- `generate_policies` no longer writes skeletons for routes covered by a policy group or `default_policy`; the middleware never evaluates such a file, and an `allowed` skeleton could hide that the effective policy is different. `{root}.check` is still generated
+- `annotate_openapi` writes `x-authz-policy` / `x-authz-source` as `{method: value}` maps when a route's methods resolve differently (previously the first method won), and skips non-API routes
+- The `fastapi-topaz` console script adds the working directory to `sys.path`, so `--app myapp:app` finds `./myapp.py`
+- `fastapi-topaz policy-map` accepts `--config` and uses its `policy_path_root` and `policy_path_normalizer`
+- `from fastapi_topaz import *` no longer emits `DeprecationWarning`s: deprecated aliases are removed from `__all__` (they remain importable by name)
+- `AuthorizationError` can be raised through `contextlib.contextmanager` and other code that sets `__traceback__`; it was a frozen dataclass and raised `FrozenInstanceError`
+- `require_rebac_allowed` and `get_authorized_resource` with a static `object_id=""`, an id source of `"static:"`, and `TopazConfig(max_concurrent_checks=0)` now raise `ValueError` at construction
+- `MockTopazConfig` supports `check_relations(batch=True)`, and `install_mock` patches the batched path, so batched checks no longer reach the real authorizer in tests
+- `ConnectionPool.close()` no longer closes connections still held by callers; they are closed when released. `health_check_interval`, `health_check_timeout`, `retry_on_failure` and `max_retries` are documented as having no effect
 
 ### Changed
 
 - Documented that on FastAPI 0.137+ `annotate_openapi` must run after routes are added to routers already passed to `include_router()`
+- Breaking for custom cache backends: `CacheBackend.get` and `CacheBackend.set` (and `DecisionCache.get`/`set`) take keyword-only `identity_type` and `policy_instance` arguments, which the library passes on every call; add them (or `**kwargs`) to custom backends. Existing cache entries are not reused after upgrading because the key format changed
+- Path parameters no longer override trusted resource context: the policy resource context is merged as path params, then static `resource_context`, then `resource_context_provider`, so a provider's `tenant_id` wins over a `/tenants/{tenant_id}` URL value. Applies to dependencies, the middleware and `is_allowed`
+- Codegen no longer excludes the docs routes (`/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc`) by default, since the middleware authorizes them; `scan_routes`, `generate_policies`, `policy_diff` and the rights matrix now list them. Disable them on the app or pass `exclude_paths` to `scan_routes` to leave them out
+- `install_mock` also patches `identity_provider`: tests get `MockTopazConfig.identity_returns` as an `IDENTITY_TYPE_SUB` identity (or an unauthenticated identity for `None`) instead of the config's own provider
+- CLI commands exit with code 2 instead of 1 when the app or config cannot be imported
 
 ## [1.2.1] - 2026-10-01
 

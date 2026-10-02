@@ -6,12 +6,14 @@ Generate Rego policy skeletons from FastAPI routes and validate policies at star
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
 
+from fastapi.routing import APIRoute
 from starlette.routing import Mount
 
 from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
@@ -19,9 +21,10 @@ from ._routes import iter_frontend_paths, iter_routes, set_route_attr
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
-    from fastapi.routing import APIRoute
 
     from .dependencies import TopazConfig
+
+logger = logging.getLogger("fastapi_topaz.codegen")
 
 __all__ = [
     "annotate_openapi",
@@ -87,7 +90,7 @@ class ValidationResult:
 
 def _extract_path_params(path: str) -> list[str]:
     """Extract path parameter names from a route path."""
-    return re.findall(r"\{(\w+)\}", path)
+    return re.findall(r"\{(\w+)(?::\w+)?\}", path)
 
 
 def _generate_policy_rego(
@@ -157,12 +160,8 @@ def _generate_policy_rego(
 # A mount accepts every method; the middleware skips OPTIONS and HEAD by default
 _MOUNT_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
-DEFAULT_EXCLUDE_PATHS = {
-    "/openapi.json",
-    "/docs",
-    "/docs/oauth2-redirect",
-    "/redoc",
-}
+# Empty: the middleware authorizes docs routes too, so codegen lists them
+DEFAULT_EXCLUDE_PATHS: set[str] = set()
 
 
 def scan_routes(
@@ -177,7 +176,9 @@ def scan_routes(
     Args:
         app: FastAPI application instance
         policy_root: Policy path root
-        exclude_paths: Paths to exclude (defaults to docs routes)
+        exclude_paths: Paths to exclude (default: none; docs routes such as
+            ``/docs`` and ``/openapi.json`` are listed because the middleware
+            authorizes them)
         policy_path_normalizer: Optional callable applied to generated policy
             paths (must match the runtime config to avoid drift)
 
@@ -233,15 +234,20 @@ def generate_policies(
     config: TopazConfig,
     output_dir: str | Path | None = None,
     template: PolicyTemplate | None = None,
+    overwrite: bool = False,
 ) -> dict[str, str]:
     """
     Generate Rego policy skeletons from FastAPI routes.
+
+    Routes covered by a matching policy group or by ``default_policy`` get no
+    skeleton. ``{root}.check`` is always generated.
 
     Args:
         app: FastAPI application instance
         config: TopazConfig with policy_path_root
         output_dir: Optional directory to write policy files
         template: Optional template configuration
+        overwrite: Replace existing policy files (default keeps them)
 
     Returns:
         Dict mapping policy paths to Rego content
@@ -252,9 +258,17 @@ def generate_policies(
         config.policy_path_root,
         policy_path_normalizer=config.policy_path_normalizer,
     )
+    compiled_groups = _compile_policy_groups(config.policy_groups)
     policies: dict[str, str] = {}
 
     for route_info in routes:
+        # Routes resolved by a group or the default policy never evaluate a
+        # per-route file (the middleware chain ignores group file existence),
+        # so a skeleton would be dead code that hides the real policy
+        if config.default_policy or any(
+            pattern.match(route_info["route_pattern"]) for pattern, _ in compiled_groups
+        ):
+            continue
         policy_path = route_info["policy_path"]
         rego = _generate_policy_rego(
             policy_path,
@@ -275,11 +289,19 @@ def generate_policies(
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         for policy_path, content in policies.items():
-            file_path = output_path / f"{policy_path.replace('.', '/')}.rego"
+            file_path = _policy_file(output_path, policy_path)
+            if file_path.exists() and not overwrite:
+                logger.warning(f"Skipping existing policy file {file_path} (use overwrite=True)")
+                continue
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content)
 
     return policies
+
+
+def _policy_file(output_dir: Path, policy_path: str) -> Path:
+    """Return the .rego file path for a policy path under output_dir."""
+    return output_dir / f"{policy_path.replace('.', '/')}.rego"
 
 
 def policy_diff(
@@ -293,7 +315,9 @@ def policy_diff(
     When ``config`` has ``policy_groups`` or ``default_policy`` set, routes
     without an explicit ``.rego`` file are classified as *group-covered* or
     *default-covered* instead of *missing* — provided the referenced policy
-    file actually exists in *policies_dir*.
+    file actually exists in *policies_dir*. As in the middleware, the first
+    matching group decides: if its file is missing the route is *missing*,
+    even when a later group or the default policy has a file.
 
     Args:
         app: FastAPI application instance
@@ -332,19 +356,16 @@ def policy_diff(
             diff.valid.append(policy_path)
             continue
 
-        # Check if covered by a policy group
-        group_match = False
-        for compiled_pattern, group_policy_path in compiled_groups:
-            if compiled_pattern.match(route_path) and group_policy_path in existing_policies:
+        # The first matching group decides, as in the middleware: when its
+        # policy file is missing the route is missing, with no fallthrough
+        group_policy_path = next(
+            (gp for pattern, gp in compiled_groups if pattern.match(route_path)), None
+        )
+        if group_policy_path is not None:
+            if group_policy_path in existing_policies:
                 diff.group_covered.append(policy_path)
-                group_match = True
-                break
-
-        if group_match:
-            continue
-
-        # Check if covered by default policy
-        if config.default_policy and config.default_policy in existing_policies:
+                continue
+        elif config.default_policy and config.default_policy in existing_policies:
             diff.default_covered.append(policy_path)
             continue
 
@@ -483,7 +504,9 @@ def annotate_openapi(
     resolution chain as :func:`generate_rights_matrix` (explicit file when
     *policies_dir* is given > policy group > default policy > generated),
     then merges ``x-authz-policy`` and ``x-authz-source`` into each route's
-    ``openapi_extra``. Existing ``openapi_extra`` keys are preserved.
+    ``openapi_extra``. Existing ``openapi_extra`` keys are preserved. When
+    the methods of one route resolve differently, both keys are written as
+    ``{method: value}`` maps sorted by method; otherwise they are strings.
 
     Call after route registration and before the first schema build (the
     schema is cached on first access to ``app.openapi()``). This includes
@@ -505,24 +528,37 @@ def annotate_openapi(
 
     annotated = 0
     for route in iter_routes(app):
-        if not hasattr(route, "methods") or not hasattr(route, "path"):
+        # Only API routes carry openapi_extra; Starlette routes such as the
+        # docs endpoints are not part of the schema
+        if not isinstance(getattr(route, "original_route", route), APIRoute):
             continue
-        api_route = cast("APIRoute", route)
-        for method in api_route.methods or []:
-            resolution = by_method_path.get((method, api_route.path))
-            if resolution is None:
-                continue
-            set_route_attr(
-                route,
-                "openapi_extra",
-                {
-                    **(api_route.openapi_extra or {}),
-                    "x-authz-policy": resolution.resolved_policy_path,
-                    "x-authz-source": resolution.resolution_source,
-                },
-            )
-            annotated += 1
-            break  # one annotation per route object
+        api_route = cast(APIRoute, route)
+        by_method = {
+            method: by_method_path[(method, api_route.path)]
+            for method in sorted(api_route.methods or [])
+            if (method, api_route.path) in by_method_path
+        }
+        if not by_method:
+            continue
+        pairs = {(r.resolved_policy_path, r.resolution_source) for r in by_method.values()}
+        policy: str | dict[str, str]
+        source: str | dict[str, str]
+        if len(pairs) == 1:
+            policy, source = next(iter(pairs))
+        else:
+            # Methods resolve differently (e.g. only GET has an explicit file)
+            policy = {m: r.resolved_policy_path for m, r in by_method.items()}
+            source = {m: r.resolution_source for m, r in by_method.items()}
+        set_route_attr(
+            route,
+            "openapi_extra",
+            {
+                **(api_route.openapi_extra or {}),
+                "x-authz-policy": policy,
+                "x-authz-source": source,
+            },
+        )
+        annotated += 1
 
     return annotated
 

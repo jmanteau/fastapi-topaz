@@ -80,8 +80,12 @@ class PrometheusMetrics:
     _fallback: Any = field(default=None, init=False, repr=False)
     _cache_size: Any = field(default=None, init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        # Register collectors eagerly so label conflicts surface at construction
+        self._initialize()
+
     def _initialize(self) -> None:
-        """Lazy initialization of metrics."""
+        """Initialize metrics (no-op when prometheus_client is unavailable)."""
         if self._initialized or not PROMETHEUS_AVAILABLE:
             return
 
@@ -89,13 +93,26 @@ class PrometheusMetrics:
         p = self.prefix
 
         def _get_or_create(collector_cls: Any, name: str, *args: Any, **kwargs: Any) -> Any:
-            """Create a collector, reusing an existing one on duplicate registration."""
+            """Create a collector, reusing an existing one on duplicate registration.
+
+            Reuse requires the same collector type and label names; otherwise
+            every later ``.labels(...)`` call would fail at request time.
+            """
             try:
                 return collector_cls(name, *args, **kwargs)
             except ValueError:
                 existing = getattr(registry, "_names_to_collectors", {}).get(name)
                 if existing is None:
                     raise
+                requested = tuple(args[1] if len(args) > 1 else kwargs.get("labelnames", ()))
+                existing_labels = tuple(getattr(existing, "_labelnames", ()))
+                if not isinstance(existing, collector_cls) or existing_labels != requested:
+                    raise ValueError(
+                        f"Metric {name!r} is already registered as "
+                        f"{type(existing).__name__} with labels {list(existing_labels)}; "
+                        f"requested {collector_cls.__name__} with labels {list(requested)}. "
+                        "Use a different prefix or registry, or matching options."
+                    ) from None
                 return existing
 
         # Build label sets

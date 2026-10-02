@@ -10,6 +10,7 @@ import fnmatch
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from aserto.client import Identity, IdentityType
 from fastapi import Request
 
 __all__ = [
@@ -235,6 +236,29 @@ class MockTopazConfig:
 
         return result
 
+    async def _check_decisions_batch(
+        self,
+        request: Request,
+        policy_path: str,
+        decisions: list[str],
+        resource_context: dict[str, Any] | None,
+        source: str = "manual",
+    ) -> dict[str, bool]:
+        """Batch path of ``check_relations(batch=True)``: one relation check per decision."""
+        ctx = dict(resource_context) if resource_context else {}
+        return {
+            decision: await self.check_decision(
+                request, policy_path, decision, {**ctx, "relation": decision}, source=source
+            )
+            for decision in decisions
+        }
+
+    def identity_provider(self, request: Request) -> Identity:
+        """Identity for ``identity_returns``; None means unauthenticated."""
+        if self.identity_returns is None:
+            return Identity(type=IdentityType.IDENTITY_TYPE_NONE, value="")
+        return Identity(type=IdentityType.IDENTITY_TYPE_SUB, value=self.identity_returns)
+
     def find_decisions(self, **filters: Any) -> list[Decision]:
         """Find recorded decisions matching filters."""
         results = []
@@ -257,9 +281,17 @@ def install_mock(monkeypatch: Any, mock_config: MockTopazConfig, target: Any) ->
     """
     Patch a real TopazConfig to use mock behavior.
 
+    Patches ``check_decision``, the batched path used by
+    ``check_relations(batch=True)``, and ``identity_provider``: the target's
+    own identity provider is replaced by ``mock_config.identity_returns``
+    (``None`` yields an unauthenticated identity, so the middleware takes its
+    401/anonymous path).
+
     Args:
         monkeypatch: pytest monkeypatch fixture
         mock_config: MockTopazConfig instance
         target: The real TopazConfig instance to patch
     """
     monkeypatch.setattr(target, "check_decision", mock_config.check_decision)
+    monkeypatch.setattr(target, "_check_decisions_batch", mock_config._check_decisions_batch)
+    monkeypatch.setattr(target, "identity_provider", mock_config.identity_provider)

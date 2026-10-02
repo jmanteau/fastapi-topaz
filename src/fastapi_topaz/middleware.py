@@ -342,10 +342,7 @@ class TopazMiddleware:
             identity = Identity(type=IdentityType.IDENTITY_TYPE_NONE, value="anonymous")
 
         # Build resource context
-        resource_context = {}
-        if self.config.resource_context_provider:
-            resource_context.update(self.config.resource_context_provider(request))
-        resource_context.update(path_params)
+        resource_context = self.config._policy_resource_context(request)
 
         # Check authorization; audit events are emitted by check_decision
         check_error: Exception | None = None

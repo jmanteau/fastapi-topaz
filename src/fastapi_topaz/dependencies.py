@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import logging
 from collections.abc import Awaitable
-from typing import Any, Callable, Literal, TypeVar
+from typing import Any, Callable, Literal, TypeVar, cast
 
 from aserto.client import ResourceContext
 from fastapi import HTTPException, Request, status
+from starlette.concurrency import run_in_threadpool
 
 from ._policy import _resolve_policy_path
 from .config import TopazConfig
@@ -29,24 +32,20 @@ async def _check_policy_and_raise(
     """
     identity = config.identity_provider(request)
 
-    ctx: ResourceContext = dict(resource_context) if resource_context else {}
-    if config.resource_context_provider:
-        ctx.update(config.resource_context_provider(request))
-
-    # Add path params to context
-    if request.path_params:
-        ctx.update(request.path_params)
+    ctx = config._policy_resource_context(request, resource_context)
 
     logger.debug(
         f"Authorization check: path={policy_path}, decision={decision}, "
-        f"identity_type={identity.type}, identity_value={identity.value}"
+        f"identity_type={identity.type}"
     )
     logger.debug(f"Resource context: {ctx}")
 
     allowed = await config.check_decision(request, policy_path, decision, ctx)
 
     if not allowed:
-        logger.debug(f"Access DENIED: path={policy_path}, identity={identity.value}, context={ctx}")
+        logger.debug(
+            f"Access DENIED: path={policy_path}, identity_type={identity.type}, context={ctx}"
+        )
         detail: str | dict = "Forbidden"
         if config.expose_deny_reason:
             detail = {"detail": "Forbidden", "policy": policy_path, "source": "dependency"}
@@ -55,7 +54,7 @@ async def _check_policy_and_raise(
             detail=detail,
         )
 
-    logger.debug(f"Access GRANTED: path={policy_path}, identity={identity.value}")
+    logger.debug(f"Access GRANTED: path={policy_path}, identity_type={identity.type}")
 
 
 def _raise_rebac_denied(config: TopazConfig, relation: str, object_type: str, obj_id: str) -> None:
@@ -98,6 +97,15 @@ def _require_object_id(obj_id: str, request: Request, expected_param: str) -> No
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Authorization misconfiguration: could not resolve object ID",
     )
+
+
+def _reject_empty_static_object_id(object_id: str | Callable[[Request], str] | None) -> None:
+    """Raise at factory time when a static object_id is empty.
+
+    ``object_id=""`` would check the empty object in Topaz on every request.
+    """
+    if isinstance(object_id, str) and not object_id:
+        raise ValueError("object_id must be a non-empty string, a callable, or None")
 
 
 def require_policy_allowed(
@@ -223,6 +231,7 @@ def require_rebac_allowed(
             ...
         ```
     """
+    _reject_empty_static_object_id(object_id)
 
     async def dependency(request: Request) -> None:
         # Resolve object_id
@@ -263,19 +272,24 @@ def require_rebac_allowed(
 
 def get_authorized_resource(
     config: TopazConfig,
-    resource_fetcher: Callable[[Request], T | None],
+    resource_fetcher: Callable[[Request], T | None | Awaitable[T | None]],
     object_type: str,
     relation: str,
     object_id: str | Callable[[Request], str] | None = None,
     subject_type: str = "user",
 ) -> Callable[[Request], Awaitable[T]]:
     """
-    Async dependency that fetches a resource and checks authorization.
+    Async dependency that checks authorization, then fetches the resource.
     Returns resource or raises 403/404.
+
+    Authorization runs first, so a denied request gets 403 whether or not the
+    resource exists (no existence oracle) and the fetcher is never called.
 
     Args:
         config: Topaz configuration
-        resource_fetcher: Function that takes (request) and returns resource or None
+        resource_fetcher: Function that takes (request) and returns resource or
+            None. Coroutine functions are awaited; sync functions run in a
+            threadpool so blocking I/O does not stall the event loop.
         object_type: Type of object (e.g., "document")
         relation: Relation to check (e.g., "can_write")
         object_id: Static ID, callable, or None (uses path param "id")
@@ -300,17 +314,10 @@ def get_authorized_resource(
             ...
         ```
     """
+    _reject_empty_static_object_id(object_id)
+    is_async_fetcher = inspect.iscoroutinefunction(resource_fetcher)
 
     async def dependency(request: Request) -> T:
-        # First fetch the resource
-        resource = resource_fetcher(request)
-
-        if resource is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"{object_type.capitalize()} not found",
-            )
-
         # Resolve object_id
         if callable(object_id):
             obj_id = object_id(request)
@@ -336,7 +343,21 @@ def get_authorized_resource(
         if not allowed:
             _raise_rebac_denied(config, relation, object_type, obj_id)
 
-        return resource
+        # Fetch only after authorization succeeded
+        if is_async_fetcher:
+            resource = await cast(Callable[[Request], Awaitable["T | None"]], resource_fetcher)(
+                request
+            )
+        else:
+            resource = await run_in_threadpool(functools.partial(resource_fetcher, request))
+
+        if resource is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{object_type.capitalize()} not found",
+            )
+
+        return cast(T, resource)
 
     return dependency
 
@@ -452,6 +473,7 @@ def require_rebac_hierarchy(
         Async dependency function for FastAPI
 
     Raises:
+        ValueError: At factory time, if ``checks`` is empty
         HTTPException(403): If authorization fails based on mode semantics
 
     Example:
@@ -467,6 +489,9 @@ def require_rebac_hierarchy(
             ...
         ```
     """
+    if not checks:
+        # An empty "all" would vacuously allow everything
+        raise ValueError("require_rebac_hierarchy() requires at least one check")
 
     async def dependency(request: Request) -> None:
         try:

@@ -25,6 +25,10 @@ def _make_config(**overrides):
     return TopazConfig(**defaults)
 
 
+# Cache-key scope of the identity and policy instance used by _make_config
+_SCOPE = _make_config()._cache_scope(Identity(type=IdentityType.IDENTITY_TYPE_SUB, value="user-1"))
+
+
 class TestTopazConfigLifecycle:
     """Tests for close() and async context manager (H3 fix)."""
 
@@ -298,6 +302,10 @@ class TestResolveIdSource:
         request = _make_request()
         assert _resolve_id_source("static:global", request) == "global"
 
+    def test_empty_static_raises(self):
+        with pytest.raises(ValueError, match="static"):
+            _resolve_id_source("static:", _make_request())
+
     def test_callable_resolves(self):
         request = _make_request(path_params={"doc_id": "doc-1"})
         assert _resolve_id_source(lambda r: r.path_params["doc_id"], request) == "doc-1"
@@ -398,6 +406,7 @@ class TestBatchedRelationChecks:
             "can_read",
             {"object_type": "document", "object_id": "42", "subject_type": "user"},
             True,
+            **_SCOPE,
         )
         config, authorizer = self._config_with_mock_wire(
             {"can_write": False}, decision_cache=cache
@@ -418,8 +427,8 @@ class TestBatchedRelationChecks:
     async def test_all_cached_makes_no_wire_call(self):
         cache = DecisionCache(ttl_seconds=60)
         ctx = {"object_type": "document", "object_id": "42", "subject_type": "user"}
-        await cache.set("user-1", "test.check", "can_read", ctx, True)
-        await cache.set("user-1", "test.check", "can_write", ctx, False)
+        await cache.set("user-1", "test.check", "can_read", ctx, True, **_SCOPE)
+        await cache.set("user-1", "test.check", "can_write", ctx, False, **_SCOPE)
         config, authorizer = self._config_with_mock_wire({}, decision_cache=cache)
 
         results = await config.check_relations(
@@ -487,6 +496,7 @@ class TestBatchedRelationChecks:
             "can_read",
             {"object_type": "document", "object_id": "42", "subject_type": "user"},
             True,
+            **_SCOPE,
         )
 
         results = await config.check_relations(
@@ -662,7 +672,9 @@ class TestCheckDecisionFallbackPaths:
         breaker._state = CircuitState.OPEN
         breaker._open_since = asyncio.get_event_loop().time()
 
-        await config._set_stale_cached("user-1", "test.GET.docs", "allowed", None, True)
+        await config._set_stale_cached(
+            "user-1", "test.GET.docs", "allowed", None, True, **_SCOPE
+        )
 
         result = await config.check_decision(self._mock_request(), "test.GET.docs", "allowed")
 
@@ -754,6 +766,7 @@ class TestBatchMetricsAndBreaker:
             "can_read",
             {"object_type": "document", "object_id": "42", "subject_type": "user"},
             True,
+            **_SCOPE,
         )
         config = _make_config(
             metrics=metrics, decision_cache=cache, circuit_breaker=CircuitBreaker()
@@ -853,3 +866,82 @@ class TestConfigSmallGaps:
         ctx = config._authorizer.decisions.call_args.kwargs["resource_context"]
         assert ctx["tenant"] == "acme"
         assert ctx["object_type"] == "document"
+
+
+class _FlakyCacheBackend:
+    """CacheBackend whose set() raises OSError once fail_writes is on."""
+
+    def __init__(self):
+        self.fail_writes = False
+
+    async def get(self, identity_value, policy_path, decision, resource_context, **scope):
+        return None
+
+    async def set(self, identity_value, policy_path, decision, resource_context, value, **scope):
+        if self.fail_writes:
+            raise OSError("cache backend down")
+
+    def clear(self):
+        pass
+
+    def size(self):
+        return 0
+
+
+class TestCacheWriteErrorFailsClosed:
+    """A cache-write error must propagate, never become a stale-cache fallback."""
+
+    def _mock_request(self):
+        request = Mock(spec=Request)
+        request.path_params = {}
+        return request
+
+    def _config(self, wire_side_effect):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        cache = _FlakyCacheBackend()
+        config = _make_config(
+            decision_cache=cache, circuit_breaker=CircuitBreaker(fallback="cache_then_deny")
+        )
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(side_effect=wire_side_effect)
+        return config, cache
+
+    async def test_check_decision_raises_instead_of_serving_stale_allow(self):
+        config, cache = self._config([{"allowed": True}, {"allowed": False}])
+        assert await config.check_decision(self._mock_request(), "test.GET.docs", "allowed")
+
+        cache.fail_writes = True
+        with pytest.raises(OSError):
+            await config.check_decision(self._mock_request(), "test.GET.docs", "allowed")
+        assert config.circuit_breaker._failure_count == 0
+
+    async def test_batch_raises_instead_of_serving_stale_allow(self):
+        config, cache = self._config([{"can_read": True}, {"can_read": False}])
+
+        async def check():
+            return await config.check_relations(
+                self._mock_request(),
+                object_type="document",
+                object_id="42",
+                relations=["can_read"],
+                batch=True,
+            )
+
+        assert await check() == {"can_read": True}
+
+        cache.fail_writes = True
+        with pytest.raises(OSError):
+            await check()
+        assert config.circuit_breaker._failure_count == 0
+
+
+class TestMaxConcurrentChecksValidation:
+    """max_concurrent_checks=0 created a semaphore that blocked every bulk check forever."""
+
+    def test_zero_rejected(self):
+        with pytest.raises(ValueError, match="max_concurrent_checks"):
+            _make_config(max_concurrent_checks=0)
+
+    def test_one_accepted(self):
+        assert _make_config(max_concurrent_checks=1).max_concurrent_checks == 1

@@ -26,6 +26,8 @@ config = TopazConfig(
 )
 ```
 
+Collectors are registered on the registry (the default `prometheus_client` registry unless you pass `registry=`) when `PrometheusMetrics` is constructed. Several instances with the same `prefix` and label options share the collectors. Two instances with the same `prefix` but different label options (for example one with `include_policy_path=True`) raise `ValueError` at construction, naming the metric and both label sets; use a different `prefix` or `registry` for each.
+
 ### Expose Metrics Endpoint
 
 ```python

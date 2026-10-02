@@ -134,8 +134,14 @@ ORDER BY denied_count DESC
 | log_unauthenticated | bool | True | Log 401 events |
 | log_manual_checks | bool | False | Log is_allowed() calls |
 | include_resource_context | bool | False | Include resource details; resource context often carries user data (emails, names, document attributes), so review what your providers put in it before enabling |
-| include_request_headers | bool | False | Include HTTP request headers in events; `authorization` and `cookie` values are redacted |
+| include_request_headers | bool | False | Include HTTP request headers in events; `authorization`, `proxy-authorization`, `cookie`, `x-api-key`, `x-auth-token` and `x-csrf-token` values are redacted |
 | handler | Callable | None | Custom async handler |
+
+## Failure Handling and Redaction
+
+Audit logging never changes the authorization outcome. If a handler raises, or the default logger cannot serialize an event, the error is logged with its traceback through the `fastapi_topaz.audit` logger and the request continues with the decision already made. `to_json()` serializes values that JSON does not support (such as `datetime` or custom objects in resource context) with `str()`.
+
+When the identity type is `IDENTITY_TYPE_JWT`, `identity.value` is written as `[REDACTED]`, because the value is a bearer token. Other identity types (such as `IDENTITY_TYPE_SUB`) keep their value.
 
 ## Client IP Caveat
 

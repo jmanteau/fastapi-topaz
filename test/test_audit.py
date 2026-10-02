@@ -440,3 +440,132 @@ class TestResourceContextInclusion:
 
         assert events[0].resource_context == {"owner_email": "a@b.c"}
         assert events[0].to_dict()["resource_context"] == {"owner_email": "a@b.c"}
+
+
+def _audited_app(audit_logger, monkeypatch, *, use_middleware, identity=None, provider=None):
+    """App protected by a dependency or the middleware, with Topaz allowing."""
+    from unittest.mock import AsyncMock
+
+    from aserto.client import AuthorizerOptions, Identity, IdentityType
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+
+    from fastapi_topaz import TopazConfig, TopazMiddleware, require_policy_allowed
+    from fastapi_topaz._client import SharedAuthorizerClient
+
+    monkeypatch.setattr(
+        SharedAuthorizerClient, "decisions", AsyncMock(return_value={"allowed": True})
+    )
+    identity = identity or Identity(type=IdentityType.IDENTITY_TYPE_SUB, value="user-1")
+    config = TopazConfig(
+        authorizer_options=AuthorizerOptions(url="localhost:8282"),
+        policy_path_root="testapp",
+        identity_provider=lambda r: identity,
+        policy_instance_name="test",
+        resource_context_provider=provider,
+        audit_logger=audit_logger,
+    )
+    app = FastAPI()
+    deps = [] if use_middleware else [Depends(require_policy_allowed(config, "testapp.GET.x"))]
+
+    @app.get("/x", dependencies=deps)
+    def route():
+        return {"ok": True}
+
+    if use_middleware:
+        app.add_middleware(TopazMiddleware, config=config)
+    return TestClient(app)
+
+
+class TestAuditFailuresDoNotChangeResponse:
+    """Regression: an audit handler or serialization error turned an allowed
+    request into a 500."""
+
+    @pytest.mark.parametrize("use_middleware", [False, True])
+    def test_raising_handler_still_returns_200(self, monkeypatch, use_middleware):
+        def handler(event):
+            raise RuntimeError("audit sink down")
+
+        client = _audited_app(AuditLogger(handler=handler), monkeypatch, use_middleware=use_middleware)
+        assert client.get("/x").status_code == 200
+
+    @pytest.mark.parametrize("use_middleware", [False, True])
+    def test_unserializable_context_still_returns_200(self, monkeypatch, use_middleware):
+        client = _audited_app(
+            AuditLogger(include_resource_context=True),
+            monkeypatch,
+            use_middleware=use_middleware,
+            provider=lambda r: {"obj": object()},
+        )
+        assert client.get("/x").status_code == 200
+
+    def test_to_json_stringifies_unserializable_values(self):
+        event = AuditEvent(
+            event="authorization.dependency.allowed",
+            source="dependency",
+            policy_path="p",
+            decision="allowed",
+            resource_context={"when": object()},
+        )
+        assert "object object" in json.loads(event.to_json())["resource_context"]["when"]
+
+
+class TestAuditSecretRedaction:
+    """Bearer credentials must not reach audit or debug logs."""
+
+    @pytest.mark.parametrize(
+        "header", ["proxy-authorization", "x-api-key", "x-auth-token", "x-csrf-token"]
+    )
+    @pytest.mark.asyncio
+    async def test_credential_headers_redacted(self, header):
+        events = []
+        request = Mock()
+        request.method = "GET"
+        request.url = Mock()
+        request.url.path = "/test"
+        request.headers = {header: "secret-value", "x-tenant": "acme"}
+        request.client = None
+
+        await AuditLogger(handler=events.append, include_request_headers=True).log_decision(
+            request, "test", True
+        )
+
+        headers = events[0].to_dict()["request"]["headers"]
+        assert headers[header] == "[REDACTED]"
+        assert headers["x-tenant"] == "acme"
+
+    def test_jwt_identity_value_redacted(self, monkeypatch):
+        from aserto.client import Identity, IdentityType
+
+        events = []
+        client = _audited_app(
+            AuditLogger(handler=events.append),
+            monkeypatch,
+            use_middleware=False,
+            identity=Identity(type=IdentityType.IDENTITY_TYPE_JWT, value="eyJ.secret.token"),
+        )
+        client.get("/x")
+        assert events[0].identity_value == "[REDACTED]"
+
+    def test_sub_identity_value_kept(self, monkeypatch):
+        events = []
+        client = _audited_app(AuditLogger(handler=events.append), monkeypatch, use_middleware=False)
+        client.get("/x")
+        assert events[0].identity_value == "user-1"
+
+    def test_dependency_debug_logs_omit_identity_value(self, monkeypatch, caplog):
+        import logging
+
+        from aserto.client import Identity, IdentityType
+
+        client = _audited_app(
+            None,
+            monkeypatch,
+            use_middleware=False,
+            identity=Identity(type=IdentityType.IDENTITY_TYPE_JWT, value="eyJ.secret.token"),
+        )
+        with caplog.at_level(logging.DEBUG, logger="fastapi_topaz"):
+            client.get("/x")
+
+        assert "Authorization check" in caplog.text
+        assert "eyJ.secret.token" not in caplog.text
