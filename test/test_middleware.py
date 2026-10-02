@@ -1345,3 +1345,28 @@ class TestExposeDenyReasonMiddleware:
 
         assert response.status_code == 403
         assert response.json() == {"custom": True}
+
+
+class TestTrustedContextPrecedenceMiddleware:
+    """Regression: path params never override resource_context_provider values."""
+
+    def test_provider_beats_path_param(self, authorizer_options, identity_provider, patch_client):
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            resource_context_provider=lambda req: {"tenant_id": "trusted-tenant"},
+        )
+        app = FastAPI()
+
+        @app.get("/tenants/{tenant_id}/docs/{doc_id}")
+        def route(tenant_id: str, doc_id: str):
+            return {"status": "ok"}
+
+        app.add_middleware(TopazMiddleware, config=config)
+        TestClient(app).get("/tenants/attacker/docs/7")
+
+        ctx = patch_client.decisions.call_args.kwargs["resource_context"]
+        assert ctx["tenant_id"] == "trusted-tenant"
+        assert ctx["doc_id"] == "7"

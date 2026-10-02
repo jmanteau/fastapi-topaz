@@ -150,11 +150,13 @@ class DictBackend:
     def __init__(self):
         self.store = {}
 
-    async def get(self, identity_value, policy_path, decision, resource_context):
-        return self.store.get(make_decision_key(identity_value, policy_path, decision, resource_context))
+    async def get(self, identity_value, policy_path, decision, resource_context, **scope):
+        key = make_decision_key(identity_value, policy_path, decision, resource_context, **scope)
+        return self.store.get(key)
 
-    async def set(self, identity_value, policy_path, decision, resource_context, value):
-        self.store[make_decision_key(identity_value, policy_path, decision, resource_context)] = value
+    async def set(self, identity_value, policy_path, decision, resource_context, value, **scope):
+        key = make_decision_key(identity_value, policy_path, decision, resource_context, **scope)
+        self.store[key] = value
 
     async def clear(self):
         self.store.clear()
@@ -312,3 +314,105 @@ class TestConfigInvalidateCache:
         config = self._make_config(DecisionCache())
         with pytest.raises(ValueError):
             await config.invalidate_cache()
+
+
+class TestDecisionKeyCollisions:
+    """Regression: cache keys must not collide across identity types,
+    policy instances, or separator-bearing values."""
+
+    def test_separator_in_values_does_not_collide(self):
+        a = make_decision_key("a:b", "c", "allowed", None)
+        b = make_decision_key("a", "b:c", "allowed", None)
+        assert a != b
+
+    def test_identity_type_is_part_of_key(self):
+        a = make_decision_key("alice", "p", "allowed", None, identity_type="SUB")
+        b = make_decision_key("alice", "p", "allowed", None, identity_type="JWT")
+        assert a != b
+
+    def test_policy_instance_is_part_of_key(self):
+        a = make_decision_key("alice", "p", "allowed", None, policy_instance="a/a")
+        b = make_decision_key("alice", "p", "allowed", None, policy_instance="b/b")
+        assert a != b
+
+
+@pytest.mark.asyncio
+class TestSharedCacheScoping:
+    """Regression: check_decision scopes cache entries by identity type and
+    policy instance, so a shared DecisionCache never serves the wrong grant."""
+
+    def _config(self, cache, identity_type, instance="inst"):
+        from unittest.mock import AsyncMock, Mock
+
+        from aserto.client import AuthorizerOptions, Identity
+
+        from fastapi_topaz.config import TopazConfig
+
+        config = TopazConfig(
+            authorizer_options=AuthorizerOptions(url="localhost:8282"),
+            policy_path_root="app",
+            identity_provider=lambda r: Identity(type=identity_type, value="alice"),
+            policy_instance_name=instance,
+            decision_cache=cache,
+        )
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(return_value={"allowed": False})
+        return config
+
+    def _request(self):
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.path_params = {}
+        return request
+
+    async def test_identity_types_with_same_value_miss_each_other(self):
+        from aserto.client import IdentityType
+
+        cache = DecisionCache()
+        sub = self._config(cache, IdentityType.IDENTITY_TYPE_SUB)
+        sub._authorizer.decisions.return_value = {"allowed": True}
+        assert await sub.check_decision(self._request(), "app.GET.x", "allowed") is True
+
+        jwt = self._config(cache, IdentityType.IDENTITY_TYPE_JWT)
+        assert await jwt.check_decision(self._request(), "app.GET.x", "allowed") is False
+        jwt._authorizer.decisions.assert_awaited_once()
+
+    async def test_policy_instances_miss_each_other(self):
+        from aserto.client import IdentityType
+
+        cache = DecisionCache()
+        first = self._config(cache, IdentityType.IDENTITY_TYPE_SUB, instance="one")
+        first._authorizer.decisions.return_value = {"allowed": True}
+        assert await first.check_decision(self._request(), "app.GET.x", "allowed") is True
+
+        second = self._config(cache, IdentityType.IDENTITY_TYPE_SUB, instance="two")
+        assert await second.check_decision(self._request(), "app.GET.x", "allowed") is False
+        second._authorizer.decisions.assert_awaited_once()
+
+    async def test_same_scope_still_hits(self):
+        from aserto.client import IdentityType
+
+        cache = DecisionCache()
+        first = self._config(cache, IdentityType.IDENTITY_TYPE_SUB)
+        first._authorizer.decisions.return_value = {"allowed": True}
+        await first.check_decision(self._request(), "app.GET.x", "allowed")
+
+        second = self._config(cache, IdentityType.IDENTITY_TYPE_SUB)
+        assert await second.check_decision(self._request(), "app.GET.x", "allowed") is True
+        second._authorizer.decisions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+class TestSmallCacheEviction:
+    """Regression: max_size < 10 used to evict 0 entries and grow unbounded."""
+
+    async def test_small_cache_stays_bounded(self):
+        cache = DecisionCache(max_size=5)
+        for i in range(20):
+            await cache.set(f"user{i}", "/p", "allowed", None, True)
+        assert cache.size() <= 5
+
+    def test_max_size_below_one_rejected(self):
+        with pytest.raises(ValueError, match="max_size"):
+            DecisionCache(max_size=0)

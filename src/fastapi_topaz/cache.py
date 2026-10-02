@@ -24,6 +24,10 @@ class CacheBackend(Protocol):
     ``TopazConfig(decision_cache=...)`` — e.g. a Redis- or memcached-backed
     store. :class:`DecisionCache` is the built-in in-memory implementation.
 
+    ``identity_type`` and ``policy_instance`` are keyword-only and must be
+    part of the key: two identities of different types can share a value, and
+    two configs (policy instances) can share one backend.
+
     Backends may additionally implement
     ``async invalidate(identity_value=None, policy_path=None, object_id=None) -> int``;
     when present, :meth:`TopazConfig.invalidate_cache` delegates to it.
@@ -35,6 +39,9 @@ class CacheBackend(Protocol):
         policy_path: str,
         decision: str,
         resource_context: ResourceContext | None,
+        *,
+        identity_type: str = "",
+        policy_instance: str = "",
     ) -> bool | None:
         """Return the cached decision, or None if not cached or expired."""
         ...
@@ -46,6 +53,9 @@ class CacheBackend(Protocol):
         decision: str,
         resource_context: ResourceContext | None,
         value: bool,
+        *,
+        identity_type: str = "",
+        policy_instance: str = "",
     ) -> None:
         """Cache a decision."""
         ...
@@ -64,14 +74,29 @@ def make_decision_key(
     policy_path: str,
     decision: str,
     resource_context: ResourceContext | None,
+    *,
+    identity_type: str = "",
+    policy_instance: str = "",
 ) -> str:
     """Create a stable cache key from authorization parameters.
 
-    Nested dicts in the resource context are serialized with sorted keys so
-    logically identical contexts always produce the same key.
+    Components are serialized as one JSON list, so no separator inside a
+    value can make two different parameter sets collide. Nested dicts in the
+    resource context are serialized with sorted keys so logically identical
+    contexts always produce the same key.
     """
-    ctx_str = json.dumps(resource_context, sort_keys=True, default=str) if resource_context else ""
-    key_data = f"{identity_value}:{policy_path}:{decision}:{ctx_str}"
+    key_data = json.dumps(
+        [
+            identity_type,
+            identity_value,
+            policy_instance,
+            policy_path,
+            decision,
+            resource_context or None,
+        ],
+        sort_keys=True,
+        default=str,
+    )
     return hashlib.sha256(key_data.encode()).hexdigest()[:32]
 
 
@@ -105,15 +130,29 @@ class DecisionCache:
     _cache: dict[str, CacheEntry] = field(default_factory=dict)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
+    def __post_init__(self) -> None:
+        if self.max_size < 1:
+            raise ValueError(f"max_size must be >= 1, got {self.max_size}")
+
     def _make_key(
         self,
         identity_value: str,
         policy_path: str,
         decision: str,
         resource_context: ResourceContext | None,
+        *,
+        identity_type: str = "",
+        policy_instance: str = "",
     ) -> str:
         """Create a cache key from authorization parameters."""
-        return make_decision_key(identity_value, policy_path, decision, resource_context)
+        return make_decision_key(
+            identity_value,
+            policy_path,
+            decision,
+            resource_context,
+            identity_type=identity_type,
+            policy_instance=policy_instance,
+        )
 
     async def get(
         self,
@@ -121,9 +160,19 @@ class DecisionCache:
         policy_path: str,
         decision: str,
         resource_context: ResourceContext | None,
+        *,
+        identity_type: str = "",
+        policy_instance: str = "",
     ) -> bool | None:
         """Get a cached decision, or None if not cached or expired."""
-        key = self._make_key(identity_value, policy_path, decision, resource_context)
+        key = self._make_key(
+            identity_value,
+            policy_path,
+            decision,
+            resource_context,
+            identity_type=identity_type,
+            policy_instance=policy_instance,
+        )
         async with self._lock:
             entry = self._cache.get(key)
             if entry is None:
@@ -143,9 +192,19 @@ class DecisionCache:
         decision: str,
         resource_context: ResourceContext | None,
         value: bool,
+        *,
+        identity_type: str = "",
+        policy_instance: str = "",
     ) -> None:
         """Cache a decision."""
-        key = self._make_key(identity_value, policy_path, decision, resource_context)
+        key = self._make_key(
+            identity_value,
+            policy_path,
+            decision,
+            resource_context,
+            identity_type=identity_type,
+            policy_instance=policy_instance,
+        )
         async with self._lock:
             # Evict oldest entries if cache is full
             if len(self._cache) >= self.max_size:
@@ -156,7 +215,7 @@ class DecisionCache:
                     del self._cache[k]
                 # If still full, remove oldest 10%
                 if len(self._cache) >= self.max_size:
-                    to_remove = list(self._cache.keys())[: self.max_size // 10]
+                    to_remove = list(self._cache.keys())[: max(1, self.max_size // 10)]
                     for k in to_remove:
                         del self._cache[k]
 

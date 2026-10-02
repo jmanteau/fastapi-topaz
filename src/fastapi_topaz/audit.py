@@ -140,7 +140,7 @@ class AuditEvent:
 
     def to_json(self) -> str:
         """Convert to JSON string."""
-        return json.dumps(self.to_dict())
+        return json.dumps(self.to_dict(), default=str)
 
 
 # Type for custom handlers
@@ -217,7 +217,14 @@ class AuditLogger:
             return request.client.host
         return None
 
-    _REDACTED_HEADERS = ("authorization", "cookie")
+    _REDACTED_HEADERS = (
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "x-api-key",
+        "x-auth-token",
+        "x-csrf-token",
+    )
 
     def _collect_headers(self, request: Request | None) -> dict[str, str] | None:
         """Collect request headers with credential values redacted."""
@@ -229,14 +236,21 @@ class AuditLogger:
         }
 
     async def _emit(self, event: AuditEvent) -> None:
-        """Emit event to handler or default logger."""
-        if self.handler:
-            result = self.handler(event)
-            if result is not None:
-                await result
-        else:
-            level = getattr(logging, event.level.upper(), logging.INFO)
-            logger.log(level, event.to_json())
+        """Emit event to handler or default logger.
+
+        Failures are logged and swallowed: auditing must never change the
+        authorization outcome or the response.
+        """
+        try:
+            if self.handler:
+                result = self.handler(event)
+                if result is not None:
+                    await result
+            else:
+                level = getattr(logging, event.level.upper(), logging.INFO)
+                logger.log(level, event.to_json())
+        except Exception:
+            logger.exception("Audit handler failed for %s", event.event)
 
     async def log_decision(
         self,

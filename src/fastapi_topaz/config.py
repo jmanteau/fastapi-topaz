@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from aserto.client import AuthorizerOptions, Identity, ResourceContext
+from aserto.client import AuthorizerOptions, Identity, IdentityType, ResourceContext
 from aserto.client.authorizer.aio import AuthorizerClient
 from fastapi import Request
 
@@ -80,7 +80,10 @@ def _resolve_id_source(id_source: str | Callable[[Request], str], request: Reque
         return resolved
 
     if id_source.startswith("static:"):
-        return id_source[7:]
+        resolved = id_source[7:]
+        if not resolved:
+            raise ValueError("id_source 'static:' has an empty value")
+        return resolved
 
     # Default: path parameter
     resolved = str(request.path_params.get(id_source, ""))
@@ -91,6 +94,11 @@ def _resolve_id_source(id_source: str | Callable[[Request], str], request: Reque
             f"on {request.method} {request.url.path}; available path params: {available}"
         )
     return resolved
+
+
+def _identity_type_name(identity: Identity) -> str:
+    """Return the identity type as a stable string (enum name when available)."""
+    return identity.type.name if hasattr(identity.type, "name") else str(identity.type)  # type: ignore[union-attr]
 
 
 @dataclass
@@ -212,6 +220,8 @@ class TopazConfig:
         self.default_policy = default_policy  # validated by the property setter
         self.policy_groups = policy_groups or []  # validated by the property setter
         self.decision_cache = decision_cache
+        if max_concurrent_checks < 1:
+            raise ValueError(f"max_concurrent_checks must be >= 1, got {max_concurrent_checks}")
         self.max_concurrent_checks = max_concurrent_checks
         self.check_timeout = check_timeout
         self.circuit_breaker = circuit_breaker
@@ -287,6 +297,29 @@ class TopazConfig:
             self._stale_cache_lock = asyncio.Lock()
         return self._stale_cache_lock
 
+    def _policy_resource_context(
+        self, request: Request, base: ResourceContext | None = None
+    ) -> dict[str, Any]:
+        """Merge resource context for a policy check, trusted sources last.
+
+        Precedence (lowest to highest): path params, static ``base`` context,
+        ``resource_context_provider``. Client-controlled path params can fill
+        keys but never override values set by the application.
+        """
+        ctx: dict[str, Any] = dict(request.path_params)
+        if base:
+            ctx.update(base)
+        if self.resource_context_provider:
+            ctx.update(self.resource_context_provider(request))
+        return ctx
+
+    def _cache_scope(self, identity: Identity) -> dict[str, str]:
+        """Keyword arguments that scope cache keys to identity type and policy instance."""
+        return {
+            "identity_type": _identity_type_name(identity),
+            "policy_instance": f"{self.policy_instance_name}/{self.policy_instance_label}",
+        }
+
     def create_client(self, request: Request) -> AuthorizerClient:
         """Create a Topaz authorizer client with identity from request.
 
@@ -304,9 +337,10 @@ class TopazConfig:
         policy_path: str,
         decision: str,
         resource_context: ResourceContext | None,
+        **scope: str,
     ) -> str:
         """Create a key for the stale cache."""
-        return make_decision_key(identity_value, policy_path, decision, resource_context)
+        return make_decision_key(identity_value, policy_path, decision, resource_context, **scope)
 
     async def _get_stale_cached(
         self,
@@ -314,12 +348,15 @@ class TopazConfig:
         policy_path: str,
         decision: str,
         resource_context: ResourceContext | None,
+        **scope: str,
     ) -> bool | None:
         """Get a potentially stale cached decision for circuit breaker fallback."""
         if not self.circuit_breaker or not self.circuit_breaker.serve_stale_cache:
             return None
 
-        key = self._make_stale_cache_key(identity_value, policy_path, decision, resource_context)
+        key = self._make_stale_cache_key(
+            identity_value, policy_path, decision, resource_context, **scope
+        )
         async with self._get_stale_cache_lock():
             if key not in self._stale_cache:
                 return None
@@ -341,12 +378,15 @@ class TopazConfig:
         decision: str,
         resource_context: ResourceContext | None,
         value: bool,
+        **scope: str,
     ) -> None:
         """Store a decision in the stale cache for circuit breaker fallback."""
         if not self.circuit_breaker:
             return
 
-        key = self._make_stale_cache_key(identity_value, policy_path, decision, resource_context)
+        key = self._make_stale_cache_key(
+            identity_value, policy_path, decision, resource_context, **scope
+        )
         async with self._get_stale_cache_lock():
             self._stale_cache[key] = (value, time.monotonic())
 
@@ -488,10 +528,11 @@ class TopazConfig:
             check_type="rebac" if is_rebac else "policy",
             cached=cached,
             latency_ms=latency_ms,
-            identity_type=identity.type.name  # type: ignore[union-attr]
-            if hasattr(identity.type, "name")
-            else str(identity.type),
-            identity_value=identity.value,
+            identity_type=_identity_type_name(identity),
+            # A JWT identity value is a bearer credential; never write it to audit logs
+            identity_value="[REDACTED]"
+            if identity.type == IdentityType.IDENTITY_TYPE_JWT
+            else identity.value,
             object_type=_ctx_str("object_type"),
             object_id=_ctx_str("object_id"),
             relation=_ctx_str("relation"),
@@ -546,6 +587,7 @@ class TopazConfig:
         """
         identity = self.identity_provider(request)
         identity_value = identity.value or ""
+        scope = self._cache_scope(identity)
         start_time = time.monotonic()
 
         results: dict[str, bool] = {}
@@ -558,7 +600,7 @@ class TopazConfig:
             cached = None
             if self.decision_cache:
                 cached = await self.decision_cache.get(
-                    identity_value, policy_path, decision, resource_context
+                    identity_value, policy_path, decision, resource_context, **scope
                 )
             if cached is not None:
                 if self.metrics:
@@ -580,7 +622,7 @@ class TopazConfig:
                 reason = "authorizer_error"
                 for decision in misses:
                     stale = await self._get_stale_cached(
-                        identity_value, policy_path, decision, resource_context
+                        identity_value, policy_path, decision, resource_context, **scope
                     )
                     assert self.circuit_breaker is not None
                     result = await self.circuit_breaker.get_fallback_decision(
@@ -613,7 +655,7 @@ class TopazConfig:
                     reason = "authorizer_error"
                     for decision in misses:
                         stale = await self._get_stale_cached(
-                            identity_value, policy_path, decision, resource_context
+                            identity_value, policy_path, decision, resource_context, **scope
                         )
                         result = await self.circuit_breaker.get_fallback_decision(
                             request,
@@ -638,10 +680,15 @@ class TopazConfig:
                         cached_flags[decision] = False
                         if self.decision_cache:
                             await self.decision_cache.set(
-                                identity_value, policy_path, decision, resource_context, result
+                                identity_value,
+                                policy_path,
+                                decision,
+                                resource_context,
+                                result,
+                                **scope,
                             )
                         await self._set_stale_cached(
-                            identity_value, policy_path, decision, resource_context, result
+                            identity_value, policy_path, decision, resource_context, result, **scope
                         )
                     if self.decision_cache and self.metrics:
                         self.metrics.set_cache_size(self.decision_cache.size())
@@ -709,9 +756,10 @@ class TopazConfig:
         try:
             # Check fresh cache first
             identity_value = identity.value or ""
+            scope = self._cache_scope(identity)
             if self.decision_cache:
                 cached = await self.decision_cache.get(
-                    identity_value, policy_path, decision, resource_context
+                    identity_value, policy_path, decision, resource_context, **scope
                 )
                 if cached is not None:
                     logger.debug(f"Cache HIT: {policy_path}, decision={decision}")
@@ -730,7 +778,7 @@ class TopazConfig:
                 if not should_call:
                     # Circuit is open, use fallback
                     stale_cached = await self._get_stale_cached(
-                        identity_value, policy_path, decision, resource_context
+                        identity_value, policy_path, decision, resource_context, **scope
                     )
                     logger.warning(
                         f"Circuit OPEN, using fallback for {policy_path} "
@@ -780,7 +828,7 @@ class TopazConfig:
 
                 # Try fallback
                 stale_cached = await self._get_stale_cached(
-                    identity_value, policy_path, decision, resource_context
+                    identity_value, policy_path, decision, resource_context, **scope
                 )
                 logger.warning(
                     f"Topaz call failed ({type(e).__name__}), using fallback for {policy_path}"
@@ -820,14 +868,14 @@ class TopazConfig:
             # turn into a fallback decision
             if self.decision_cache:
                 await self.decision_cache.set(
-                    identity_value, policy_path, decision, resource_context, result
+                    identity_value, policy_path, decision, resource_context, result, **scope
                 )
                 if self.metrics:
                     self.metrics.set_cache_size(self.decision_cache.size())
 
             # Store in stale cache for circuit breaker fallback
             await self._set_stale_cached(
-                identity_value, policy_path, decision, resource_context, result
+                identity_value, policy_path, decision, resource_context, result, **scope
             )
 
             return result
@@ -939,12 +987,7 @@ class TopazConfig:
                 return {"document": doc, "can_edit": can_edit}
             ```
         """
-        ctx: ResourceContext = dict(resource_context) if resource_context else {}
-        if self.resource_context_provider:
-            ctx.update(self.resource_context_provider(request))
-        if request.path_params:
-            ctx.update(request.path_params)
-
+        ctx = self._policy_resource_context(request, resource_context)
         return await self.check_decision(request, policy_path, decision, ctx, source=source)
 
     async def check_relation(
@@ -1115,6 +1158,9 @@ class TopazConfig:
         Returns:
             HierarchyResult with check results and metadata
 
+        Raises:
+            ValueError: If ``checks`` is empty or an ID source cannot be resolved.
+
         Example:
             ```python
             @app.get("/orgs/{org_id}/projects/{proj_id}/docs/{doc_id}")
@@ -1130,6 +1176,10 @@ class TopazConfig:
                 return {"allowed": result.allowed, "access_chain": result.as_dict()}
             ```
         """
+        if not checks:
+            # An empty "all" would vacuously allow everything
+            raise ValueError("check_hierarchy() requires at least one check")
+
         # For first_match, order matters - run sequentially
         if mode == "first_match" or not optimize:
             return await self._check_hierarchy_sequential(
