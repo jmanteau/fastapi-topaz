@@ -127,12 +127,22 @@ Complete reference for all fastapi-topaz public exports.
       members:
         - state
         - status
+        - admit
         - should_allow_request
         - record_success
         - record_failure
+        - release_probe
         - get_fallback_decision
         - reset
         - is_failure_exception
+
+---
+
+### Admission
+
+::: fastapi_topaz.Admission
+    options:
+      show_root_heading: false
 
 ---
 

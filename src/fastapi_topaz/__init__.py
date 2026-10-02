@@ -12,7 +12,7 @@ from ._defaults import Obj
 from ._policy import normalize_hyphens
 from .audit import AuditEvent, AuditLogger
 from .cache import CacheBackend, DecisionCache
-from .circuit_breaker import CircuitBreaker, CircuitState, CircuitStatus
+from .circuit_breaker import Admission, CircuitBreaker, CircuitState, CircuitStatus
 from .codegen import annotate_openapi
 from .config import HierarchyResult, PolicyGroup, TopazConfig
 from .connection_pool import ConnectionPool, PoolStatus
@@ -84,6 +84,7 @@ __all__ = [
     "SkipMiddleware",
     # Circuit Breaker
     "CircuitBreaker",
+    "Admission",
     "CircuitState",
     "CircuitStatus",
     # Connection Pool

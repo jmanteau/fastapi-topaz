@@ -38,6 +38,19 @@ FallbackStrategy = Union[
 ]
 
 
+@dataclass(frozen=True)
+class Admission:
+    """A ticket for one call let through by :meth:`CircuitBreaker.admit`.
+
+    Pass it back to ``record_success`` / ``record_failure`` / ``release_probe``
+    so that, in half-open state, only the calls admitted as probes for the
+    current half-open period free probe slots and decide recovery.
+    """
+
+    probe: bool
+    epoch: int
+
+
 @dataclass
 class CircuitStatus:
     """Current status of the circuit breaker for health checks."""
@@ -139,6 +152,8 @@ class CircuitBreaker:
     _last_success_time: float | None = field(default=None, init=False, repr=False)
     _open_since: float | None = field(default=None, init=False, repr=False)
     _half_open_requests: int = field(default=0, init=False, repr=False)
+    # Incremented on every entry into HALF_OPEN; ties probe tickets to one period
+    _half_open_epoch: int = field(default=0, init=False, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -193,6 +208,7 @@ class CircuitBreaker:
             self._open_since = None
         elif new_state == CircuitState.HALF_OPEN:
             self._half_open_requests = 0
+            self._half_open_epoch += 1
 
         logger.warning(
             f"Circuit breaker state change: {old_state.value} -> {new_state.value} "
@@ -205,38 +221,74 @@ class CircuitBreaker:
             except Exception as e:
                 logger.error(f"Error in on_state_change callback: {e}")
 
-    async def record_success(self) -> None:
-        """Record a successful authorization call."""
+    def _is_current_probe(self, admission: Admission | None) -> bool:
+        """Whether a finished call may act as a half-open probe.
+
+        Without a ticket (direct use of the public API) every call counts, as
+        before tickets existed. With one, only a probe admitted in the current
+        half-open period does.
+        """
+        if admission is None:
+            return True
+        return admission.probe and admission.epoch == self._half_open_epoch
+
+    async def record_success(self, admission: Admission | None = None) -> None:
+        """Record a successful authorization call.
+
+        Args:
+            admission: The ticket from :meth:`admit` for this call. In
+                half-open state only a current probe frees its slot and counts
+                toward ``success_threshold``.
+        """
         async with self._lock:
             self._last_success_time = time.monotonic()
             self._failure_count = 0
 
-            if self._state == CircuitState.HALF_OPEN:
+            if self._state == CircuitState.HALF_OPEN and self._is_current_probe(admission):
                 self._half_open_requests = max(0, self._half_open_requests - 1)
                 self._success_count += 1
                 if self._success_count >= self.success_threshold:
                     await self._transition_to(CircuitState.CLOSED, "test_succeeded")
 
-    def release_probe(self) -> None:
-        """Free a half-open probe slot for a call that ended without a verdict."""
+    def release_probe(self, admission: Admission | None = None) -> None:
+        """Free a half-open probe slot for a call that ended without a verdict.
+
+        Args:
+            admission: The ticket from :meth:`admit`; only a current probe
+                frees a slot.
+        """
         # Sync and lock-free so it is safe while CancelledError unwinds; all
         # mutations run on the event loop thread.
-        if self._state == CircuitState.HALF_OPEN and self._half_open_requests > 0:
+        if (
+            self._state == CircuitState.HALF_OPEN
+            and self._half_open_requests > 0
+            and self._is_current_probe(admission)
+        ):
             self._half_open_requests -= 1
 
-    async def record_failure(self, exception: Exception) -> None:
-        """Record a failed authorization call."""
+    async def record_failure(
+        self, exception: Exception, admission: Admission | None = None
+    ) -> None:
+        """Record a failed authorization call.
+
+        Args:
+            exception: The failure.
+            admission: The ticket from :meth:`admit`. In half-open state only a
+                current probe reopens the circuit; a call admitted earlier
+                (e.g. while closed) carries no evidence about recovery.
+        """
         async with self._lock:
             self._last_failure_time = time.monotonic()
             self._failure_count += 1
-            self._success_count = 0
 
             logger.warning(f"Circuit breaker recorded failure #{self._failure_count}: {exception}")
 
             if self._state == CircuitState.CLOSED:
+                self._success_count = 0
                 if self._failure_count >= self.failure_threshold:
                     await self._transition_to(CircuitState.OPEN, "failure_threshold_exceeded")
-            elif self._state == CircuitState.HALF_OPEN:
+            elif self._state == CircuitState.HALF_OPEN and self._is_current_probe(admission):
+                self._success_count = 0
                 await self._transition_to(CircuitState.OPEN, "test_failed")
 
     async def should_allow_request(self) -> bool:
@@ -245,10 +297,22 @@ class CircuitBreaker:
 
         Returns True if the circuit is closed or if we should test in half-open.
         Returns False if the circuit is open and fallback should be used.
+        Prefer :meth:`admit`, whose ticket lets the breaker tell probes apart.
+        """
+        return await self.admit() is not None
+
+    async def admit(self) -> Admission | None:
+        """
+        Let a request through to Topaz, or refuse it.
+
+        Returns an :class:`Admission` when the circuit is closed, or when a
+        half-open probe slot is free (``probe=True``). Returns ``None`` when the
+        circuit is open, or half-open with every probe slot taken, and the
+        fallback should be used. Pass the ticket back when recording the result.
         """
         async with self._lock:
             if self._state == CircuitState.CLOSED:
-                return True
+                return Admission(probe=False, epoch=self._half_open_epoch)
 
             if self._state == CircuitState.OPEN:
                 # Check if recovery timeout has passed
@@ -259,17 +323,17 @@ class CircuitBreaker:
                             CircuitState.HALF_OPEN, "recovery_timeout_expired"
                         )
                         self._half_open_requests = 1
-                        return True
-                return False
+                        return Admission(probe=True, epoch=self._half_open_epoch)
+                return None
 
             if self._state == CircuitState.HALF_OPEN:
                 # Allow limited requests in half-open state
                 if self._half_open_requests < self.half_open_max_requests:
                     self._half_open_requests += 1
-                    return True
-                return False
+                    return Admission(probe=True, epoch=self._half_open_epoch)
+                return None
 
-            return False
+            return None
 
     def is_failure_exception(self, exc: Exception) -> bool:
         """Check if an exception should count as a circuit breaker failure.

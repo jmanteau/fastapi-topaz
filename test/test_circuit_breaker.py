@@ -551,3 +551,119 @@ class TestHalfOpenProbeSlots:
 
         assert await config.check_decision(self._request(), "test.GET.x", "allowed") is True
         assert config._authorizer.decisions.await_count == 3
+
+
+class TestProbeSlotOwnership:
+    """Only calls admitted as half-open probes free probe slots or decide recovery.
+
+    A call admitted while CLOSED, or a probe from an earlier half-open period,
+    can finish while the breaker is HALF_OPEN; it must not free the current
+    probe's slot (admitting extra probes) or count toward success_threshold.
+    """
+
+    @staticmethod
+    async def _half_open_with_old_call(**kwargs):
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01, **kwargs)
+        old = await cb.admit()  # admitted while CLOSED
+        assert old is not None and not old.probe
+        await cb.record_failure(ConnectionError("down"))
+        await asyncio.sleep(0.02)
+        probe = await cb.admit()
+        assert probe is not None and probe.probe
+        assert cb.state == CircuitState.HALF_OPEN
+        return cb, old, probe
+
+    async def test_old_call_success_keeps_probe_slot(self):
+        cb, old, _probe = await self._half_open_with_old_call()
+        await cb.record_success(old)
+        assert cb.state == CircuitState.HALF_OPEN
+        assert cb._success_count == 0
+        assert await cb.admit() is None  # the only slot is still the probe's
+
+    async def test_old_call_cancelled_keeps_probe_slot(self):
+        cb, old, _probe = await self._half_open_with_old_call()
+        cb.release_probe(old)
+        assert await cb.admit() is None
+
+    async def test_old_call_failure_does_not_reopen(self):
+        cb, old, _probe = await self._half_open_with_old_call()
+        await cb.record_failure(ConnectionError("late"), old)
+        assert cb.state == CircuitState.HALF_OPEN
+
+    async def test_probe_success_closes(self):
+        cb, _old, probe = await self._half_open_with_old_call(success_threshold=1)
+        await cb.record_success(probe)
+        assert cb.state == CircuitState.CLOSED
+
+    async def test_probe_failure_reopens(self):
+        cb, _old, probe = await self._half_open_with_old_call()
+        await cb.record_failure(ConnectionError("still down"), probe)
+        assert cb.state == CircuitState.OPEN
+
+    async def test_probe_from_earlier_half_open_period_is_stale(self):
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01, half_open_max_requests=2)
+        await cb.record_failure(ConnectionError("down"))
+        await asyncio.sleep(0.02)
+        first, second = await cb.admit(), await cb.admit()
+        assert first is not None and second is not None
+        await cb.record_failure(ConnectionError("still down"), first)
+        assert cb.state == CircuitState.OPEN
+
+        await asyncio.sleep(0.02)
+        current = await cb.admit()
+        assert current is not None and current.probe
+        await cb.record_success(second)  # late result from the earlier period
+        assert cb._success_count == 0
+        assert cb._half_open_requests == 1  # current probe's slot untouched
+
+    async def test_should_allow_request_still_bool(self):
+        cb = CircuitBreaker()
+        assert await cb.should_allow_request() is True
+
+    async def test_config_old_call_does_not_free_probe_slot(
+        self, authorizer_options, identity_provider
+    ):
+        cb = CircuitBreaker(failure_threshold=1, success_threshold=1, recovery_timeout=0.01)
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="test",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            circuit_breaker=cb,
+        )
+        old_done, probe_done = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def decisions(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:  # slow call admitted while CLOSED
+                await old_done.wait()
+                return {"allowed": True}
+            if calls == 2:  # trips the breaker
+                raise ConnectionError("down")
+            await probe_done.wait()  # the half-open probe
+            return {"allowed": True}
+
+        config._authorizer = Mock()
+        config._authorizer.decisions = decisions
+        request = Mock(spec=Request)
+        request.path_params = {}
+
+        old = asyncio.create_task(config.check_decision(request, "test.GET.a", "allowed"))
+        await asyncio.sleep(0)
+        assert await config.check_decision(request, "test.GET.b", "allowed") is False
+        assert cb.state == CircuitState.OPEN
+        await asyncio.sleep(0.02)
+        probe = asyncio.create_task(config.check_decision(request, "test.GET.c", "allowed"))
+        await asyncio.sleep(0)
+        assert cb.state == CircuitState.HALF_OPEN
+
+        old_done.set()
+        assert await old is True
+        assert cb.state == CircuitState.HALF_OPEN
+        assert cb._half_open_requests == 1
+
+        probe_done.set()
+        assert await probe is True
+        assert cb.state == CircuitState.CLOSED

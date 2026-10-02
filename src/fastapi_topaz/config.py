@@ -19,7 +19,7 @@ from .cache import make_decision_key
 if TYPE_CHECKING:
     from .audit import AuditLogger
     from .cache import CacheBackend
-    from .circuit_breaker import CircuitBreaker
+    from .circuit_breaker import Admission, CircuitBreaker
     from .connection_pool import ConnectionPool
     from .observability import OTelTracing, PrometheusMetrics
 
@@ -548,8 +548,13 @@ class TopazConfig:
         policy_path: str,
         decisions: tuple[str, ...],
         resource_context: ResourceContext | None,
+        admission: Admission | None = None,
     ) -> dict[str, bool]:
-        """Call Topaz and report the outcome to the circuit breaker."""
+        """Call Topaz and report the outcome to the circuit breaker.
+
+        *admission* is the breaker's ticket for this call, so a result is only
+        counted as a half-open probe when the call was admitted as one.
+        """
         try:
             results = await self._authorizer.decisions(
                 identity=identity,
@@ -563,12 +568,12 @@ class TopazConfig:
         except BaseException as e:
             if self.circuit_breaker:
                 if isinstance(e, Exception) and self.circuit_breaker.is_failure_exception(e):
-                    await self.circuit_breaker.record_failure(e)
+                    await self.circuit_breaker.record_failure(e, admission)
                 else:
-                    self.circuit_breaker.release_probe()
+                    self.circuit_breaker.release_probe(admission)
             raise
         if self.circuit_breaker:
-            await self.circuit_breaker.record_success()
+            await self.circuit_breaker.record_success(admission)
         return results
 
     async def _check_decisions_batch(
@@ -614,8 +619,10 @@ class TopazConfig:
 
         if misses:
             should_call = True
+            admission: Admission | None = None
             if self.circuit_breaker:
-                should_call = await self.circuit_breaker.should_allow_request()
+                admission = await self.circuit_breaker.admit()
+                should_call = admission is not None
 
             if not should_call:
                 # Circuit open: per-decision fallback
@@ -643,7 +650,7 @@ class TopazConfig:
                 try:
                     topaz_start = time.monotonic()
                     wire_results = await self._call_authorizer(
-                        identity, policy_path, tuple(misses), resource_context
+                        identity, policy_path, tuple(misses), resource_context, admission
                     )
                     if self.metrics:
                         self.metrics.record_topaz_latency(time.monotonic() - topaz_start)
@@ -773,9 +780,10 @@ class TopazConfig:
                         self.metrics.record_cache_miss(source)
 
             # Check circuit breaker - should we attempt the call?
+            admission: Admission | None = None
             if self.circuit_breaker:
-                should_call = await self.circuit_breaker.should_allow_request()
-                if not should_call:
+                admission = await self.circuit_breaker.admit()
+                if admission is None:
                     # Circuit is open, use fallback
                     stale_cached = await self._get_stale_cached(
                         identity_value, policy_path, decision, resource_context, **scope
@@ -814,7 +822,7 @@ class TopazConfig:
             topaz_start = time.monotonic()
             try:
                 decisions_result = await self._call_authorizer(
-                    identity, policy_path, (decision,), resource_context
+                    identity, policy_path, (decision,), resource_context, admission
                 )
             except Exception as e:
                 # Check if this is a failure that should trip the circuit breaker

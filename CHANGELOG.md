@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `CircuitBreaker.admit()` returns an `Admission` ticket (exported from the package root) to pass back to `record_success`, `record_failure` and `release_probe`; `should_allow_request()` still works and returns a bool
 - `PolicyDiff.skipped` and the `"skipped"` value for `RouteResolution.resolution_source`, for routes `TopazMiddleware` does not authorize
 
 ### Fixed
 
+- Circuit breaker: in half-open state only calls admitted as probes for the current half-open period free probe slots and decide recovery. A slow call admitted while closed, or a late probe from an earlier half-open period, could free the current probe's slot (letting more than `half_open_max_requests` through) and count toward `success_threshold`, closing the circuit on stale evidence. Calls without a ticket keep the previous behavior
 - `get_authorized_resource` awaits fetchers that are objects with an async `__call__`, and awaitables returned by sync wrappers such as `lambda r: fetch(r)`; the endpoint previously received an un-awaited coroutine and the 404 for a missing resource was skipped
 - `annotate_openapi`, `generate_rights_matrix`, `policy-diff` and the `check` CLI command now report routes `TopazMiddleware` never checks as `skipped`, instead of as authorized by the resolution chain. That covers `@skip_middleware`, `Depends(SkipMiddleware)` at route or router level (frontend routes included), and the installed middleware's `exclude_paths` and `exclude_methods`, with `exclude_paths` matched against route templates. Skipped operations get `x-authz-source: skipped` and no `x-authz-policy`. `policy-diff` no longer reports a skipped route as missing
 
