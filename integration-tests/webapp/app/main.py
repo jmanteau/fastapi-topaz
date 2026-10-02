@@ -66,10 +66,7 @@ async def root(request: Request):
     except Exception:
         pass
 
-    return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "user": user},
-    )
+    return templates.TemplateResponse(request, "index.html", {"user": user})
 
 
 @app.get("/login")

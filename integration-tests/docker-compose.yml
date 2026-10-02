@@ -161,6 +161,8 @@ services:
     build:
       context: ..
       dockerfile: integration-tests/webapp/Dockerfile
+      args:
+        FASTAPI_SPEC: ${FASTAPI_SPEC:-}
     container_name: fastapi-webapp
     env_file:
       - path: .env.oidc

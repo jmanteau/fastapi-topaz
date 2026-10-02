@@ -55,6 +55,9 @@ ifndef TF
   TF := $(shell command -v terraform >/dev/null 2>&1 && echo terraform || echo tofu)
 endif
 
+# FastAPI version spec for the webapp image (empty = latest allowed), e.g. FASTAPI_SPEC='<0.137'
+export FASTAPI_SPEC
+
 ##@ Help
 help: ## Display this help message
 	@echo "$(BLUE)fastapi-topaz$(RESET) - Library + Integration Tests"
