@@ -33,16 +33,16 @@ class TestTopazConfigLifecycle:
     """Tests for close() and async context manager (H3 fix)."""
 
     @pytest.mark.asyncio
-    async def test_close_calls_pool_and_cache(self):
-        mock_pool = Mock()
-        mock_pool.close = AsyncMock()
-        mock_pool.configure = Mock()
+    async def test_close_closes_channel_and_clears_cache(self):
         cache = DecisionCache()
+        await cache.set("user", "p", "allowed", None, True)
+        config = _make_config(decision_cache=cache)
+        config._authorizer.close = AsyncMock()
 
-        config = _make_config(connection_pool=mock_pool, decision_cache=cache)
         await config.close()
 
-        mock_pool.close.assert_awaited_once()
+        config._authorizer.close.assert_awaited_once()
+        assert cache.size() == 0
 
     @pytest.mark.asyncio
     async def test_close_safe_without_pool_or_cache(self):
@@ -51,14 +51,12 @@ class TestTopazConfigLifecycle:
 
     @pytest.mark.asyncio
     async def test_async_context_manager(self):
-        mock_pool = Mock()
-        mock_pool.close = AsyncMock()
-        mock_pool.configure = Mock()
+        config = _make_config()
+        config._authorizer.close = AsyncMock()
 
-        config = _make_config(connection_pool=mock_pool)
         async with config as ctx:
             assert ctx is config
-        mock_pool.close.assert_awaited_once()
+        config._authorizer.close.assert_awaited_once()
 
 
 class TestStaleCacheSafety:

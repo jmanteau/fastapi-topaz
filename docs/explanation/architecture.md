@@ -21,7 +21,6 @@ flowchart TB
         TC[TopazConfig]
         DC[DecisionCache]
         CB[CircuitBreaker]
-        CP[ConnectionPool]
         AL[AuditLogger]
         OB[Observability<br/>Metrics + Tracing]
     end
@@ -39,7 +38,6 @@ flowchart TB
 
     TC --> DC
     TC --> CB
-    TC --> CP
     TC --> AL
     TC --> OB
 
@@ -327,23 +325,9 @@ Performance impact:
 - 10 items with 50ms latency: ~50ms (concurrent) vs ~500ms (sequential)
 - Semaphore prevents overwhelming the authorizer
 
-### Connection Pooling
+### Connection Reuse
 
-For high-throughput applications, use connection pooling:
-
-```python
-pool = ConnectionPool(min_connections=2, max_connections=10)
-
-config = TopazConfig(
-    ...
-    connection_pool=pool,
-)
-```
-
-Benefits:
-- Reuses gRPC connections
-- Reduces connection overhead
-- Automatic health checking
+Every authorization check goes through one gRPC channel per `TopazConfig`, opened on first use and shared by all requests. gRPC multiplexes concurrent calls over that channel, so there is nothing to pool or tune. Call `await config.close()` (or use `async with config:`) at shutdown to close it.
 
 ## Comparison with Alternatives
 

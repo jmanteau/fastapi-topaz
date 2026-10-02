@@ -172,7 +172,6 @@ This documentation follows the [Diataxis](https://diataxis.fr/) framework:
 | Auto policy path resolution | :white_check_mark: Stable | [API Reference](reference/api.md#require_policy_auto)    |
 | Decision caching            | :white_check_mark: Stable | [API Reference](reference/api.md#decisioncache)          |
 | Circuit breaker             | :white_check_mark: Stable | [Circuit Breaker](how-to/circuit-breaker.md)             |
-| Connection pooling          | :white_check_mark: Stable | [Connection Pooling](how-to/connection-pooling.md)       |
 | Authorization middleware    | :white_check_mark: Stable | [Middleware](how-to/middleware.md)                       |
 | Audit logging               | :white_check_mark: Stable | [Audit Logging](how-to/audit-logging.md)                 |
 | Prometheus metrics          | :white_check_mark: Stable | [Observability](how-to/observability.md)                 |

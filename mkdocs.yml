@@ -71,7 +71,6 @@ nav:
       - Circuit Breaker: how-to/circuit-breaker.md
       - Audit Logging: how-to/audit-logging.md
       - Policy Generation: how-to/policy-generation.md
-      - Connection Pooling: how-to/connection-pooling.md
       - Observability: how-to/observability.md
       - Middleware: how-to/middleware.md
       - Troubleshooting: how-to/troubleshooting.md

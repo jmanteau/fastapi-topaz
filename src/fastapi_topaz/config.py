@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from .audit import AuditLogger
     from .cache import CacheBackend
     from .circuit_breaker import Admission, CircuitBreaker
-    from .connection_pool import ConnectionPool
     from .observability import OTelTracing, PrometheusMetrics
 
 logger = logging.getLogger("fastapi_topaz")
@@ -172,8 +171,6 @@ class TopazConfig:
         check_timeout: gRPC deadline in seconds applied to each authorization
             call (default: 5.0). Set to None to disable the deadline.
         circuit_breaker: Optional circuit breaker for graceful degradation
-        connection_pool: Deprecated, has no effect on authorization calls
-            (authorization checks use a single shared gRPC channel)
         audit_logger: Optional audit logger for authorization decisions
         metrics: Optional Prometheus metrics collector. When combined with
             circuit_breaker and no user-provided on_state_change callback,
@@ -203,7 +200,6 @@ class TopazConfig:
         max_concurrent_checks: int = 10,
         check_timeout: float | None = 5.0,
         circuit_breaker: CircuitBreaker | None = None,
-        connection_pool: ConnectionPool | None = None,
         audit_logger: AuditLogger | None = None,
         metrics: PrometheusMetrics | None = None,
         tracing: OTelTracing | None = None,
@@ -225,7 +221,6 @@ class TopazConfig:
         self.max_concurrent_checks = max_concurrent_checks
         self.check_timeout = check_timeout
         self.circuit_breaker = circuit_breaker
-        self.connection_pool = connection_pool
         self.audit_logger = audit_logger
         self.metrics = metrics
         self.tracing = tracing
@@ -241,8 +236,6 @@ class TopazConfig:
         self._stale_cache_lock: asyncio.Lock | None = None
 
         # Configure connection pool with authorizer options
-        if self.connection_pool:
-            self.connection_pool.configure(authorizer_options)
 
         # Auto-wire circuit breaker metrics: record transitions and the state
         # gauge unless the user installed their own on_state_change callback
@@ -1285,8 +1278,6 @@ class TopazConfig:
     async def close(self) -> None:
         """Shut down TopazConfig and release resources."""
         await self._authorizer.close()
-        if self.connection_pool:
-            await self.connection_pool.close()
         if self.decision_cache:
             await self.decision_cache.clear()
 

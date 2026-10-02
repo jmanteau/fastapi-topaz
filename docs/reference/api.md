@@ -162,32 +162,6 @@ Complete reference for all fastapi-topaz public exports.
 
 ---
 
-## Connection Pool
-
-### ConnectionPool
-
-::: fastapi_topaz.ConnectionPool
-    options:
-      show_root_heading: false
-      members:
-        - configure
-        - initialize
-        - acquire
-        - release
-        - connection
-        - status
-        - close
-
----
-
-### PoolStatus
-
-::: fastapi_topaz.PoolStatus
-    options:
-      show_root_heading: false
-
----
-
 ## Audit Logging
 
 ### AuditLogger

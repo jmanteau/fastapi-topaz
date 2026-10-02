@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands exit with code 2 instead of 1 when the app or config cannot be imported
 - The integration-test webapp runs on current FastAPI again (it was pinned below 0.122), and its image takes a `FASTAPI_SPEC` build argument to test other route layouts
 
+### Removed
+
+- `ConnectionPool`, `PoolStatus` and `TopazConfig(connection_pool=...)`, deprecated in 1.2.0. They had no effect: authorization checks share one gRPC channel per `TopazConfig`. Delete the argument
+
 ### Deprecated
 
 - The `TopazMiddleware(on_error=...)` default changes from `"deny"` (403) to `"unavailable"` (503) in 2.0, to match the dependencies; pass `on_error="deny"` to keep today's behavior

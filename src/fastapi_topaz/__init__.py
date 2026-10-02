@@ -15,7 +15,6 @@ from .cache import CacheBackend, DecisionCache
 from .circuit_breaker import Admission, CircuitBreaker, CircuitState, CircuitStatus
 from .codegen import annotate_openapi
 from .config import HierarchyResult, PolicyGroup, TopazConfig
-from .connection_pool import ConnectionPool, PoolStatus
 from .dependencies import (
     filter_authorized_resources,
     get_authorized_resource,
@@ -88,8 +87,6 @@ __all__ = [
     "CircuitState",
     "CircuitStatus",
     # Connection Pool
-    "ConnectionPool",
-    "PoolStatus",
     # Audit Logging
     "AuditLogger",
     "AuditEvent",
