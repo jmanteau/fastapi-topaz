@@ -1,0 +1,11 @@
+# Per-machine overrides for the Makefile. Copy to local.mk (gitignored).
+# Every value below is auto-detected; set one only if detection picks the wrong thing.
+
+# Compose command (default: docker compose, then docker-compose, then podman compose)
+# COMPOSE := podman compose
+
+# Terraform binary (default: terraform, then tofu)
+# TF := tofu
+
+# Container engine socket (default: the Podman machine socket when no Docker daemon answers)
+# export DOCKER_HOST := unix:///path/to/podman-machine-default-api.sock

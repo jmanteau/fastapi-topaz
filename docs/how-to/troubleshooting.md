@@ -411,6 +411,44 @@ circuit_breaker=CircuitBreaker(
 
 ---
 
+## Integration Environment
+
+Start with `make int-doctor`. It prints what the Makefile detected and fails with a fix-it message for each missing prerequisite.
+
+### Every Authenticated Call Returns 401
+
+**Cause:** The webapp container started without OIDC credentials. Compose reads `env_file` (`integration-tests/.env.oidc`) only when it creates a container. `docker-compose restart` keeps the old environment.
+
+**Solution:** `make int-tf-apply` recreates the webapp for you. If you ran Terraform or compose by hand, recreate it:
+
+```bash
+cd integration-tests && docker-compose up -d --force-recreate webapp
+```
+
+### Login Redirect Fails / Cannot Resolve `authentik-server`
+
+**Cause:** The OIDC issuer is `http://authentik-server:9000`. The e2e client and your browser follow redirects to that name from the host.
+
+**Solution:**
+
+```bash
+echo "127.0.0.1 authentik-server" | sudo tee -a /etc/hosts
+```
+
+### Podman: "Cannot connect to the Docker daemon"
+
+**Cause:** `docker-compose` is looking for `/var/run/docker.sock`.
+
+**Solution:** The Makefile sets `DOCKER_HOST` to the Podman machine socket when `DOCKER_HOST` is unset. Check that the machine is running (`podman machine start`). For compose commands run outside `make`, export it yourself:
+
+```bash
+export DOCKER_HOST="unix://$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}')"
+```
+
+To pin a different socket, compose command, or Terraform binary, copy `local.mk.example` to `local.mk`.
+
+---
+
 ## Common Error Messages
 
 | Error                               | Cause                                 | Solution                                |

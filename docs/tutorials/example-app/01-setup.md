@@ -4,9 +4,11 @@ Get the FastAPI-Topaz test webapp running in 2 commands with automated Terraform
 
 ## Prerequisites
 
-- Docker and Docker Compose installed
+- Docker and Docker Compose installed, or Podman
 - Make (optional, but recommended)
-- Terraform - [Install](https://developer.hashicorp.com/terraform/install)
+- Terraform - [Install](https://developer.hashicorp.com/terraform/install), or OpenTofu - [Install](https://opentofu.org/docs/intro/install/)
+
+Run `make int-doctor` from the repository root to check these and the hosts entry below.
 
 ### Hosts File Configuration
 

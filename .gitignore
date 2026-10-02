@@ -37,6 +37,7 @@ env/
 .env
 .env.local
 .envrc
+local.mk
 
 # Database
 *.db
