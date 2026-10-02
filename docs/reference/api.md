@@ -19,7 +19,6 @@ Complete reference for all fastapi-topaz public exports.
         - invalidate_cache
         - health
         - policy_path_for
-        - create_client
 
 ---
 

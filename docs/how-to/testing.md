@@ -115,37 +115,25 @@ def test_list_documents_when_denied(denied_client):
     assert response.status_code == 403
 ```
 
-## Mocking the Authorizer Client
+## Asserting Which Policies Were Checked
 
-For more control, mock at the client level:
+To check which policies a request evaluated, record decisions with `MockTopazConfig(record_decisions=True)` and install it on your real config (see [`install_mock`](#mocking-a-real-config-with-install_mock) below):
 
 ```python
-from unittest.mock import Mock, patch
-from fastapi_topaz import TopazConfig
+from fastapi_topaz.testing import MockTopazConfig, install_mock
 
-@pytest.fixture
-def mock_authorizer():
-    """Mock the Topaz authorizer client."""
-    mock_client = Mock()
-    mock_client.decisions.return_value = {"allowed": True}
+def test_list_checks_policy(monkeypatch, client):
+    mock = MockTopazConfig(record_decisions=True, identity_returns="alice")
+    install_mock(monkeypatch, mock, topaz_config)
 
-    with patch.object(TopazConfig, "create_client", return_value=mock_client):
-        yield mock_client
+    assert client.get("/documents").status_code == 200
+    assert [d.policy_path for d in mock.decisions] == ["myapp.GET.documents"]
 
 
-def test_authorization_with_mock_client(client, mock_authorizer):
-    response = client.get("/documents", headers={"X-User-ID": "alice"})
-    assert response.status_code == 200
+def test_list_denied(monkeypatch, client):
+    install_mock(monkeypatch, MockTopazConfig(default_decision=False), topaz_config)
 
-    # Verify the policy was checked
-    mock_authorizer.decisions.assert_called_once()
-
-
-def test_authorization_denied(client, mock_authorizer):
-    mock_authorizer.decisions.return_value = {"allowed": False}
-
-    response = client.get("/documents", headers={"X-User-ID": "alice"})
-    assert response.status_code == 403
+    assert client.get("/documents").status_code == 403
 ```
 
 ## Integration Testing with Topaz

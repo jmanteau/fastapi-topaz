@@ -112,24 +112,9 @@ class TestCheckDecisionUsesSharedClient:
         await config.check_decision(_mock_request(), "test.GET.docs", "allowed")
         assert mock_authorizer.decisions.call_args.kwargs["timeout"] is None
 
-    @pytest.mark.asyncio
-    async def test_no_client_created_per_request(self, monkeypatch):
-        """check_decision must not call the deprecated create_client path."""
-        config = _make_config()
-        mock_authorizer = Mock()
-        mock_authorizer.decisions = AsyncMock(return_value={"allowed": True})
-        config._authorizer = mock_authorizer
-
-        create_client_calls = [0]
-
-        def counting_create_client(self, request):
-            create_client_calls[0] += 1
-            return Mock()
-
-        monkeypatch.setattr(TopazConfig, "create_client", counting_create_client)
-
-        await config.check_decision(_mock_request(), "test.GET.docs", "allowed")
-        assert create_client_calls[0] == 0
+    def test_create_client_removed(self):
+        """create_client() was removed in 2.0; checks use the shared channel."""
+        assert not hasattr(TopazConfig, "create_client")
 
 
 class TestDecisionsRpc:

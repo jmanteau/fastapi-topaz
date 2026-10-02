@@ -263,11 +263,10 @@ config.policy_path_for("GET", "/aircraft-programs")
    DecisionCache(ttl_seconds=60)
    ```
 
-3. **Disable cache for specific checks:**
+3. **Bypass the cache for specific checks:** use a second `TopazConfig` without `decision_cache` for those calls:
    ```python
-   # Bypass cache by checking directly
-   client = config.create_client(request)
-   result = await client.decisions(...)
+   uncached = TopazConfig(..., decision_cache=None)
+   allowed = await uncached.is_allowed(request, "myapp.GET.documents")
    ```
 
 ### Cache Not Working

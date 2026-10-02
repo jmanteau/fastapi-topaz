@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `TopazConfig.create_client()`, deprecated in 1.2.0. It opened a new channel per call that the caller had to close, and bypassed the cache and circuit breaker. Use `is_allowed`, `check_relation` or the dependencies. The integration webapp's share endpoint used it without awaiting the async client, so its policy check never ran; it now uses `is_allowed`
 - `ConnectionPool`, `PoolStatus` and `TopazConfig(connection_pool=...)`, deprecated in 1.2.0. They had no effect: authorization checks share one gRPC channel per `TopazConfig`. Delete the argument
 
 ### Deprecated

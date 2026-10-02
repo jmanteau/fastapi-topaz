@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from aserto.client import AuthorizerOptions, Identity, IdentityType, ResourceContext
-from aserto.client.authorizer.aio import AuthorizerClient
 from fastapi import Request
 
 from ._client import SharedAuthorizerClient
@@ -312,17 +311,6 @@ class TopazConfig:
             "identity_type": _identity_type_name(identity),
             "policy_instance": f"{self.policy_instance_name}/{self.policy_instance_label}",
         }
-
-    def create_client(self, request: Request) -> AuthorizerClient:
-        """Create a Topaz authorizer client with identity from request.
-
-        .. deprecated::
-            No longer used internally — authorization checks go through a
-            single shared gRPC channel. Each call to this method opens a new
-            channel that the caller must close. Will be removed in 2.0.
-        """
-        identity = self.identity_provider(request)
-        return AuthorizerClient(identity=identity, options=self.authorizer_options)
 
     def _make_stale_cache_key(
         self,
