@@ -158,6 +158,7 @@ topaz_config = TopazConfig(
         ),
     ],
     expose_deny_reason=settings.topaz_expose_deny_reason,
+    on_error=settings.topaz_on_error,
     decision_cache=DecisionCache(ttl_seconds=60, max_size=1000),
     circuit_breaker=CircuitBreaker(
         failure_threshold=5,

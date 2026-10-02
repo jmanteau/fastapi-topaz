@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
     from .observability import OTelTracing, PrometheusMetrics
 
 logger = logging.getLogger("fastapi_topaz")
+
+# Response to a failed authorization call: 403 Forbidden or 503 Service Unavailable
+OnError = Literal["deny", "unavailable"]
 
 
 def _resolve_id_source(id_source: str | Callable[[Request], str], request: Request) -> str:
@@ -169,6 +173,17 @@ class TopazConfig:
         max_concurrent_checks: Max concurrent authorization checks for bulk operations (default: 10)
         check_timeout: gRPC deadline in seconds applied to each authorization
             call (default: 5.0). Set to None to disable the deadline.
+        on_error: Response when the authorization call itself fails and the
+            circuit breaker gives no fallback decision, for the middleware and
+            every dependency. Both values fail closed:
+
+            - ``"deny"`` (default): 403 Forbidden, the same as a denial.
+            - ``"unavailable"``: 503 Service Unavailable, with ``Retry-After``
+              set to the circuit breaker's ``recovery_timeout`` when one is
+              configured. Clients and monitoring can tell an outage from a
+              denial, but proxies and HTTP clients may retry 503s.
+
+            ``TopazMiddleware(on_error=...)`` overrides it for the middleware.
         circuit_breaker: Optional circuit breaker for graceful degradation
         audit_logger: Optional audit logger for authorization decisions
         metrics: Optional Prometheus metrics collector. When combined with
@@ -198,6 +213,7 @@ class TopazConfig:
         decision_cache: CacheBackend | None = None,
         max_concurrent_checks: int = 10,
         check_timeout: float | None = 5.0,
+        on_error: OnError = "deny",
         circuit_breaker: CircuitBreaker | None = None,
         audit_logger: AuditLogger | None = None,
         metrics: PrometheusMetrics | None = None,
@@ -219,6 +235,7 @@ class TopazConfig:
             raise ValueError(f"max_concurrent_checks must be >= 1, got {max_concurrent_checks}")
         self.max_concurrent_checks = max_concurrent_checks
         self.check_timeout = check_timeout
+        self.on_error = on_error  # validated by the property setter
         self.circuit_breaker = circuit_breaker
         self.audit_logger = audit_logger
         self.metrics = metrics
@@ -261,6 +278,43 @@ class TopazConfig:
 
             _compile_policy_groups(groups)  # raises ValueError on bad regex
         self._policy_groups = groups
+
+    @property
+    def on_error(self) -> OnError:
+        """Response mode for failed authorization calls, validated on every assignment."""
+        return self._on_error
+
+    @on_error.setter
+    def on_error(self, value: OnError) -> None:
+        if value not in ("deny", "unavailable"):
+            raise ValueError(f"on_error must be 'deny' or 'unavailable', got {value!r}")
+        self._on_error: OnError = value
+
+    def _authz_error_response(
+        self,
+        policy_path: str,
+        source: str,
+        exc: BaseException,
+        on_error: OnError | None = None,
+    ) -> tuple[int, dict[str, Any], dict[str, str]]:
+        """Status, body and headers for an authorization call that failed.
+
+        Shared by the middleware and the dependencies so both answer alike.
+        *on_error* overrides :attr:`on_error` (the middleware's own setting).
+        The body is ``{"detail": ...}``, plus ``policy``, ``source`` and
+        ``error`` when :attr:`expose_deny_reason` is on.
+        """
+        headers: dict[str, str] = {}
+        if (on_error or self.on_error) == "unavailable":
+            status, message = 503, "Authorization service unavailable"
+            if self.circuit_breaker is not None:
+                headers["Retry-After"] = str(math.ceil(self.circuit_breaker.recovery_timeout))
+        else:
+            status, message = 403, "Forbidden"
+        body: dict[str, Any] = {"detail": message}
+        if self.expose_deny_reason:
+            body.update({"policy": policy_path, "source": source, "error": type(exc).__name__})
+        return status, body, headers
 
     @property
     def default_policy(self) -> str | None:

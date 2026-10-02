@@ -28,6 +28,7 @@ from starlette.responses import JSONResponse
 
 from fastapi_topaz import (
     AuditLogger,
+    CircuitBreaker,
     DecisionCache,
     PolicyGroup,
     SkipMiddleware,
@@ -1174,6 +1175,62 @@ class TestOnErrorOption:
         response = client.get("/test")
         assert response.status_code == 503
         assert response.json() == {"detail": "Authorization service unavailable"}
+
+    def test_config_on_error_applies_when_middleware_passes_none(self, topaz_config, monkeypatch):
+        """TopazConfig(on_error=...) is shared with the dependencies."""
+        topaz_config.on_error = "unavailable"
+        app = self._failing_app(topaz_config, monkeypatch)
+        response = TestClient(app, raise_server_exceptions=False).get("/test")
+        assert response.status_code == 503
+
+    def test_middleware_override_beats_config(self, topaz_config, monkeypatch):
+        topaz_config.on_error = "unavailable"
+        app = self._failing_app(topaz_config, monkeypatch, on_error="deny")
+        response = TestClient(app, raise_server_exceptions=False).get("/test")
+        assert response.status_code == 403
+
+    def test_no_retry_after_without_breaker(self, topaz_config, monkeypatch):
+        app = self._failing_app(topaz_config, monkeypatch, on_error="unavailable")
+        response = TestClient(app, raise_server_exceptions=False).get("/test")
+        assert "retry-after" not in response.headers
+
+    def test_retry_after_from_breaker_recovery_timeout(
+        self, authorizer_options, identity_provider, monkeypatch
+    ):
+        # RuntimeError is not a breaker failure, so no fallback decision applies
+        monkeypatch.setattr(
+            SharedAuthorizerClient, "decisions", AsyncMock(side_effect=RuntimeError("bug"))
+        )
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            on_error="unavailable",
+            circuit_breaker=CircuitBreaker(recovery_timeout=30),
+        )
+        app = FastAPI()
+        app.add_middleware(TopazMiddleware, config=config)
+
+        @app.get("/test")
+        def route():
+            return {}
+
+        response = TestClient(app, raise_server_exceptions=False).get("/test")
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "30"
+
+    def test_expose_deny_reason_on_error(self, topaz_config, monkeypatch):
+        topaz_config.expose_deny_reason = True
+        app = self._failing_app(topaz_config, monkeypatch, on_error="unavailable")
+        body = TestClient(app, raise_server_exceptions=False).get("/test").json()
+        assert body["detail"] == "Authorization service unavailable"
+        assert body["source"] == "middleware"
+        assert body["error"] == "ConnectionError"
+
+    def test_invalid_on_error_rejected(self, topaz_config):
+        with pytest.raises(ValueError, match="on_error"):
+            TopazMiddleware(FastAPI(), config=topaz_config, on_error="explode")
 
     def test_error_audited_with_reason(self, authorizer_options, identity_provider, monkeypatch):
         """Infrastructure errors emit an audit event with reason=authorizer_error."""

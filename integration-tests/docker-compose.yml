@@ -181,6 +181,8 @@ services:
       TOPAZ_POLICY_INSTANCE_LABEL: webapp
       # Test stack only: 403/503 bodies name the evaluated policy for e2e assertions
       TOPAZ_EXPOSE_DENY_REASON: "true"
+      # Test stack: answer authorizer failures with 503 so e2e covers that path
+      TOPAZ_ON_ERROR: unavailable
       LOCATION_API_URL: http://mock-location-api:8001
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production-secret-key}
       DEBUG: ${DEBUG:-false}

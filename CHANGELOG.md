@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `annotate_openapi`, `generate_rights_matrix`, `policy-diff` and the `check` CLI command now report routes `TopazMiddleware` never checks as `skipped`, instead of as authorized by the resolution chain. That covers `@skip_middleware`, `Depends(SkipMiddleware)` at route or router level (frontend routes included), and the installed middleware's `exclude_paths` and `exclude_methods`, with `exclude_paths` matched against route templates. Skipped operations get `x-authz-source: skipped` and no `x-authz-policy`. `policy-diff` no longer reports a skipped route as missing
 
 - `require_policy_auto` now includes `include_router()` prefixes on FastAPI 0.137+; it previously checked the un-prefixed route path (e.g. `myapp.POST` instead of `myapp.POST.api.folders` for a router included under `/api/folders`). When the route path cannot be resolved it fails with 500 instead of falling back to the un-prefixed path
-- Dependencies (`require_policy_allowed`, `require_policy_auto`, `require_rebac_allowed`, `get_authorized_resource`, `filter_authorized_resources`, `require_rebac_hierarchy`) now return 503 when the authorizer call fails and the circuit breaker gives no fallback decision (for example `INVALID_ARGUMENT` for a missing policy, or any error without a breaker); the error previously escaped as an unhandled 500. With `expose_deny_reason=True` the body names the policy, source and error type
+- Dependencies (`require_policy_allowed`, `require_policy_auto`, `require_rebac_allowed`, `get_authorized_resource`, `filter_authorized_resources`, `require_rebac_hierarchy`) no longer let a failed authorizer call escape as an unhandled 500 (for example `INVALID_ARGUMENT` for a missing policy, or any error without a circuit breaker). They answer per `TopazConfig.on_error`: 403 by default, 503 with `"unavailable"`
 
 - Policy generation, `policy-diff`, the rights matrix and the `check` CLI command now include frontend routes (one `GET` entry per mount path) and mounts (one entry each for `GET`, `POST`, `PUT`, `PATCH`, `DELETE`), which the middleware already authorizes; previously `policy-diff` reported them in sync while the middleware denied them at runtime
 - `TopazMiddleware` now fails closed with 403 for any breakage in FastAPI's private frontend matching internals, not only a missing matcher; other changes previously produced a 500
@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking: one `TopazConfig(on_error="deny" | "unavailable")` setting decides how the middleware and every dependency answer a failed authorization call: `"deny"` (default) gives 403, `"unavailable"` gives 503 `{"detail": "Authorization service unavailable"}` with `Retry-After` from the circuit breaker's `recovery_timeout`. `TopazMiddleware(on_error=...)` now defaults to `None` (use the config) and still overrides it. With `expose_deny_reason=True` the body adds `policy`, `source` and `error`
 - Documented that on FastAPI 0.137+ `annotate_openapi` must run after routes are added to routers already passed to `include_router()`
 - Breaking for custom cache backends: `CacheBackend.get` and `CacheBackend.set` (and `DecisionCache.get`/`set`) take keyword-only `identity_type` and `policy_instance` arguments, which the library passes on every call; add them (or `**kwargs`) to custom backends. Existing cache entries are not reused after upgrading because the key format changed
 - Path parameters no longer override trusted resource context: the policy resource context is merged as path params, then static `resource_context`, then `resource_context_provider`, so a provider's `tenant_id` wins over a `/tenants/{tenant_id}` URL value. Applies to dependencies, the middleware and `is_allowed`
@@ -62,10 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CircuitBreaker(timeout_ms=...)` and `CircuitBreaker(cache_priority=...)`, deprecated in 1.2.0; neither had any effect. Passing them now raises `TypeError`. Set the per-call deadline with `TopazConfig(check_timeout=seconds)`
 - `TopazConfig.create_client()`, deprecated in 1.2.0. It opened a new channel per call that the caller had to close, and bypassed the cache and circuit breaker. Use `is_allowed`, `check_relation` or the dependencies. The integration webapp's share endpoint used it without awaiting the async client, so its policy check never ran; it now uses `is_allowed`
 - `ConnectionPool`, `PoolStatus` and `TopazConfig(connection_pool=...)`, deprecated in 1.2.0. They had no effect: authorization checks share one gRPC channel per `TopazConfig`. Delete the argument
-
-### Deprecated
-
-- The `TopazMiddleware(on_error=...)` default changes from `"deny"` (403) to `"unavailable"` (503) in 2.0, to match the dependencies; pass `on_error="deny"` to keep today's behavior
 
 ## [1.2.1] - 2026-10-01
 

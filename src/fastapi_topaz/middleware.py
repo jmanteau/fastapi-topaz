@@ -19,7 +19,7 @@ from starlette.routing import Match
 
 from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
 from ._routes import FrontendMatchError, iter_routes, match_frontend_route
-from .config import TopazConfig
+from .config import OnError, TopazConfig
 
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
@@ -152,8 +152,10 @@ class TopazMiddleware:
         on_denied: Optional callback to customize 403 response
         on_error: How to respond when the authorization check itself fails
             (e.g. authorizer unreachable) and no circuit breaker fallback applies:
-            - "deny": Return 403 Forbidden (fail-closed default)
-            - "unavailable": Return 503 Service Unavailable
+            - None (default): use ``config.on_error``, shared with the dependencies
+            - "deny": Return 403 Forbidden (``on_denied`` is used when set)
+            - "unavailable": Return 503 Service Unavailable, with ``Retry-After``
+              when the config has a circuit breaker
         policies_dir: Optional directory to scan for explicit ``.rego`` policy files
             at startup.  When provided, the middleware builds a set of known policy
             paths and uses the resolution chain to decide which policy to evaluate
@@ -168,7 +170,7 @@ class TopazMiddleware:
         exclude_methods: list[str] | None = None,
         on_missing_identity: Literal["deny", "anonymous"] = "deny",
         on_denied: Callable[[Request, str], Response] | None = None,
-        on_error: Literal["deny", "unavailable"] = "deny",
+        on_error: OnError | None = None,
         policies_dir: str | Path | None = None,
     ) -> None:
         self.app = app
@@ -177,7 +179,9 @@ class TopazMiddleware:
         self.exclude_methods = set(exclude_methods or _DEFAULT_EXCLUDE_METHODS)
         self.on_missing_identity = on_missing_identity
         self.on_denied = on_denied
-        self.on_error = on_error
+        if on_error not in (None, "deny", "unavailable"):
+            raise ValueError(f"on_error must be 'deny', 'unavailable' or None, got {on_error!r}")
+        self.on_error: OnError | None = on_error
 
         # --- Resolution chain setup ---
         # Scan explicit policy files
@@ -392,15 +396,13 @@ class TopazMiddleware:
             deny_body = {"detail": "Forbidden", "policy": policy_path, "source": "middleware"}
 
         if check_error is not None:
-            if self.on_error == "unavailable":
-                response = JSONResponse(
-                    status_code=503,
-                    content={"detail": "Authorization service unavailable"},
-                )
-            elif self.on_denied:
+            status_code, body, headers = self.config._authz_error_response(
+                policy_path, "middleware", check_error, self.on_error
+            )
+            if status_code == 403 and self.on_denied:
                 response = self.on_denied(request, policy_path)
             else:
-                response = JSONResponse(status_code=403, content=deny_body)
+                response = JSONResponse(status_code=status_code, content=body, headers=headers)
             await response(scope, receive, send)
             return
 

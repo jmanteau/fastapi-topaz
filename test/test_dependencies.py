@@ -2393,7 +2393,7 @@ class _FakeRpcError(grpc.RpcError):
 
 
 class TestDependencyAuthorizerErrors:
-    """A failed authorizer call returns 503, never an unhandled 500 or a 403."""
+    """A failed authorizer call answers per on_error (403 or 503), never an unhandled 500."""
 
     @pytest.fixture(params=["invalid_argument", "runtime_error"])
     def failing_client(self, request, monkeypatch):
@@ -2453,12 +2453,24 @@ class TestDependencyAuthorizerErrors:
     @pytest.mark.parametrize(
         "path", ["/policy", "/auto", "/rebac/1", "/resource/1", "/filter", "/hierarchy/o1"]
     )
-    def test_returns_503(self, topaz_config, failing_client, path):
+    def test_default_denies_with_403(self, topaz_config, failing_client, path):
+        """on_error="deny" (the default) fails closed as a plain denial."""
+        response = TestClient(self._app(topaz_config)).get(path)
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Forbidden"}
+        assert "retry-after" not in response.headers
+
+    @pytest.mark.parametrize(
+        "path", ["/policy", "/auto", "/rebac/1", "/resource/1", "/filter", "/hierarchy/o1"]
+    )
+    def test_unavailable_returns_503(self, topaz_config, failing_client, path):
+        topaz_config.on_error = "unavailable"
         response = TestClient(self._app(topaz_config)).get(path)
         assert response.status_code == 503
-        assert response.json() == {"detail": "Service Unavailable"}
+        assert response.json() == {"detail": "Authorization service unavailable"}
+        assert "retry-after" not in response.headers  # no circuit breaker configured
 
-    def test_expose_deny_reason_structured_detail(
+    def test_unavailable_sets_retry_after_from_breaker(
         self, authorizer_options, identity_provider, failing_client
     ):
         config = TopazConfig(
@@ -2466,12 +2478,40 @@ class TestDependencyAuthorizerErrors:
             policy_path_root="testapp",
             identity_provider=identity_provider,
             policy_instance_name="test-policy",
-            expose_deny_reason=True,
+            on_error="unavailable",
+            # INVALID_ARGUMENT / RuntimeError are not breaker failures: no fallback
+            circuit_breaker=CircuitBreaker(recovery_timeout=12.5),
         )
         response = TestClient(self._app(config)).get("/policy")
         assert response.status_code == 503
+        assert response.headers["retry-after"] == "13"
+
+    def test_invalid_on_error_rejected(self, topaz_config):
+        with pytest.raises(ValueError, match="on_error"):
+            topaz_config.on_error = "explode"
+
+    @pytest.mark.parametrize(
+        ("on_error", "status", "message"),
+        [
+            ("deny", 403, "Forbidden"),
+            ("unavailable", 503, "Authorization service unavailable"),
+        ],
+    )
+    def test_expose_deny_reason_structured_detail(
+        self, authorizer_options, identity_provider, failing_client, on_error, status, message
+    ):
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test-policy",
+            expose_deny_reason=True,
+            on_error=on_error,
+        )
+        response = TestClient(self._app(config)).get("/policy")
+        assert response.status_code == status
         detail = response.json()["detail"]
-        assert detail["detail"] == "Service Unavailable"
+        assert detail["detail"] == message
         assert detail["policy"] == "testapp.GET.x"
         assert detail["source"] == "dependency"
         assert detail["error"] in {"_FakeRpcError", "RuntimeError"}
@@ -2479,7 +2519,7 @@ class TestDependencyAuthorizerErrors:
     def test_breaker_fallback_still_decides(
         self, authorizer_options, identity_provider, monkeypatch
     ):
-        """UNAVAILABLE with a fallback is a decision, not a 503."""
+        """UNAVAILABLE with a fallback is a decision, not an error response."""
         monkeypatch.setattr(
             SharedAuthorizerClient,
             "decisions",

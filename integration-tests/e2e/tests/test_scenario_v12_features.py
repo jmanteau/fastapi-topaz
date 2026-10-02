@@ -117,18 +117,21 @@ def test_health_reports_reachable_authorizer(health):
 
 
 def test_dependency_returns_503_when_policy_missing(anon, alice_client: AuthenticatedClient):
-    """An authorizer error in a dependency is a 503, not an unhandled 500 or a 403."""
+    """An authorizer error in a dependency answers per on_error, not an unhandled 500."""
     # The middleware still rejects anonymous callers first
     assert anon.get("/api/_test/missing-policy").status_code == 401
 
     response = alice_client.get("/api/_test/missing-policy")
+    # The test stack sets TOPAZ_ON_ERROR=unavailable; the default would be 403
     assert response.status_code == 503
     assert response.json()["detail"] == {
-        "detail": "Service Unavailable",
+        "detail": "Authorization service unavailable",
         "policy": "webapp.test.missing_policy",
         "source": "dependency",
         "error": "AioRpcError",
     }
+    # The webapp's circuit breaker has recovery_timeout=30
+    assert response.headers["retry-after"] == "30"
 
 
 @pytest.mark.parametrize("path", ["/", "/health", "/login"])

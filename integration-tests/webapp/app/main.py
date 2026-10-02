@@ -150,7 +150,7 @@ async def list_users(request: Request):
 
 # Test fixture for e2e: the middleware allows any authenticated user (default_policy),
 # then the dependency asks Topaz for a policy that does not exist. Topaz answers
-# INVALID_ARGUMENT, which the dependency turns into 503.
+# INVALID_ARGUMENT, which the dependency answers per on_error (503 in this stack).
 @app.get("/api/_test/missing-policy")
 async def missing_policy(
     _: None = Depends(require_policy_allowed(topaz_config, "webapp.test.missing_policy")),
