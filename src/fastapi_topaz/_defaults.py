@@ -27,7 +27,9 @@ ObjectMapper = Callable[[], Obj]
 ResourceMapper = Callable[[], ResourceContext]
 
 
-@dataclass(frozen=True)
+# Not frozen: Python assigns __traceback__ / __context__ on raised exceptions
+# (e.g. when re-raised through a @contextmanager); eq=False keeps identity hashing
+@dataclass(eq=False)
 class AuthorizationError(Exception):
     policy_instance_name: str
     policy_path: str

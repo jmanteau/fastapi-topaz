@@ -30,3 +30,36 @@ class TestLazyDeprecatedAttributes:
             import importlib
 
             importlib.reload(fastapi_topaz)
+
+
+class TestStarImport:
+    def test_star_import_emits_no_warning(self):
+        """Regression: deprecated names in __all__ made `import *` warn (or
+        fail under -W error)."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            exec("from fastapi_topaz import *", {})
+
+    def test_deprecated_names_still_reachable(self):
+        with pytest.warns(DeprecationWarning):
+            assert fastapi_topaz.StringMapper is _defaults.StringMapper
+
+
+class TestAuthorizationErrorRaisable:
+    def test_propagates_through_contextmanager(self):
+        """Regression: a frozen dataclass exception raised FrozenInstanceError
+        when contextlib assigned __traceback__ on re-raise."""
+        from contextlib import contextmanager
+
+        @contextmanager
+        def ctx():
+            yield
+
+        with pytest.raises(_defaults.AuthorizationError) as exc:
+            with ctx():
+                raise _defaults.AuthorizationError("inst", "app.GET.x")
+        assert exc.value.policy_path == "app.GET.x"
+
+    def test_is_hashable(self):
+        err = _defaults.AuthorizationError("inst", "app.GET.x")
+        assert {err: 1}[err] == 1

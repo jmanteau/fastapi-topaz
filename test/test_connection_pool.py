@@ -15,7 +15,7 @@ Test organization:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aserto.client import AuthorizerOptions
@@ -211,6 +211,26 @@ class TestConnectionPool:
             await pool.close()
 
             assert pool._closed is True
+            assert len(pool._connections) == 0
+
+    @pytest.mark.asyncio
+    async def test_close_defers_busy_connection_until_release(self, pool):
+        """Regression: close() closed connections still in use by a caller."""
+        with patch(AUTHORIZER_CLIENT_PATCH) as mock_client_class:
+            mock_client_class.side_effect = lambda *a, **kw: AsyncMock()
+
+            idle = await pool.acquire()
+            busy = await pool.acquire()
+            await pool.release(idle)
+
+            await pool.close()
+
+            idle.client.close.assert_awaited_once()
+            busy.client.close.assert_not_awaited()
+
+            await pool.release(busy)
+
+            busy.client.close.assert_awaited_once()
             assert len(pool._connections) == 0
 
     @pytest.mark.asyncio

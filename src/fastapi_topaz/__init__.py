@@ -61,7 +61,6 @@ __all__ = [
     "HierarchyResult",
     "PolicyGroup",
     "TopazConfig",
-    "AuthorizationError",
     # Policy utilities
     "annotate_openapi",
     "normalize_hyphens",
@@ -71,11 +70,7 @@ __all__ = [
     "IdentityType",
     "ResourceContext",
     # Type aliases
-    "IdentityMapper",
     "Obj",
-    "ObjectMapper",
-    "ResourceMapper",
-    "StringMapper",
     # Dependencies
     "filter_authorized_resources",
     "get_authorized_resource",

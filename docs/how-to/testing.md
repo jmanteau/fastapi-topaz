@@ -185,6 +185,25 @@ def test_real_authorization(topaz_instance, client):
     assert response.status_code in [200, 403]
 ```
 
+## Mocking a Real Config with `install_mock`
+
+`install_mock` patches a real `TopazConfig` so the middleware and dependencies run unchanged while decisions come from a `MockTopazConfig`:
+
+```python
+from fastapi_topaz.testing import MockTopazConfig, install_mock, when_policy
+
+def test_reader_is_denied(monkeypatch, client):
+    mock = MockTopazConfig(
+        rules=[when_policy("myapp.DELETE.*").deny()],
+        identity_returns="alice",
+    )
+    install_mock(monkeypatch, mock, topaz_config)
+
+    assert client.delete("/documents/1").status_code == 403
+```
+
+It patches `check_decision`, the batched path used by `check_relations(batch=True)`, and `identity_provider`. The config's own identity provider is replaced: a string `identity_returns` becomes an `IDENTITY_TYPE_SUB` identity with that value, and `identity_returns=None` gives an unauthenticated identity (`IDENTITY_TYPE_NONE`), so the middleware takes its 401 or anonymous path. To test your identity provider, call it directly instead of through `install_mock`.
+
 ## Testing Resource Context
 
 Verify the correct context is passed to policies:
