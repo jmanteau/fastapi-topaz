@@ -272,7 +272,9 @@ from fastapi_topaz import (
     fastapi-topaz code path; authorization failures surface as
     `HTTPException(403)`.
 
-::: fastapi_topaz.AuthorizationError
+<!-- Documented from its defining module: fastapi_topaz serves the deprecated
+     name lazily through __getattr__, which static API collection cannot see -->
+::: fastapi_topaz._defaults.AuthorizationError
     options:
       show_root_heading: false
 

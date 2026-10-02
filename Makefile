@@ -134,7 +134,7 @@ docs-serve: cmd-exists-uv ## Serve docs locally with live reload
 
 docs-build: cmd-exists-uv ## Build static documentation
 	@echo "$(BLUE)Building documentation...$(RESET)"
-	uv run --extra docs mkdocs build
+	uv run --extra docs mkdocs build --strict
 	@echo "$(GREEN)Documentation built in site/$(RESET)"
 
 docs-deploy: cmd-exists-uv ## Deploy docs to GitHub Pages
