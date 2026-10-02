@@ -6,6 +6,8 @@ FastAPI-Topaz asks a [Topaz](https://www.topaz.sh/) authorizer whether each requ
 
 Full documentation: **[jmanteau.github.io/fastapi-topaz](https://jmanteau.github.io/fastapi-topaz)**
 
+Upgrading from 1.x? See [Upgrading to 2.0](https://jmanteau.github.io/fastapi-topaz/how-to/upgrading-to-2/).
+
 ## How it works
 
 Your FastAPI app sends the user's identity and the route to Topaz. Topaz evaluates a policy and returns *allowed* or *denied*.
@@ -23,9 +25,9 @@ flowchart LR
 
 | Component | Role | Source |
 | --- | --- | --- |
-| `TopazConfig` | Holds the Topaz connection, how to find the user, and the policy root. Create it once at startup. | [`config.py` L151–L232](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/config.py#L151-L232) |
+| `TopazConfig` | Holds the Topaz connection, how to find the user, and the policy root. Create it once at startup. | [`config.py` L153–L243](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/config.py#L153-L243) |
 | Dependencies | Protect one route at a time with `Depends(...)`. | [`dependencies.py`](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py) |
-| `TopazMiddleware` | Protects every route in the app, except the paths you exclude. | [`middleware.py` L131–L182](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/middleware.py#L131-L182) |
+| `TopazMiddleware` | Protects every route in the app, except the paths you exclude. | [`middleware.py` L131–L186](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/middleware.py#L131-L186) |
 
 ## Requirements
 
@@ -79,12 +81,12 @@ Pick the check that matches your question. Not sure which one? Read [Choosing an
 
 | Question to answer | Use | Source |
 | --- | --- | --- |
-| May this user call this route? (you name the policy) | `require_policy_allowed()` | [`dependencies.py` L143–L175](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L143-L175) |
-| May this user call this route? (policy name built from the route) | `require_policy_auto()` | [`dependencies.py` L178–L238](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L178-L238) |
-| Does this user have a relation to this object, such as `can_write` on a document? | `require_rebac_allowed()` | [`dependencies.py` L241–L311](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L241-L311) |
-| Does this user have access at every level of a nested path, such as org → project → document? | `require_rebac_hierarchy()` | [`dependencies.py` L503](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L503) |
-| Fetch one object, and return it only if the user may see it | `get_authorized_resource()` | [`dependencies.py` L314](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L314) |
-| Keep only the objects in a list that the user may see | `filter_authorized_resources()` | [`dependencies.py` L419](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L419) |
+| May this user call this route? (you name the policy) | `require_policy_allowed()` | [`dependencies.py` L137–L169](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L137-L169) |
+| May this user call this route? (policy name built from the route) | `require_policy_auto()` | [`dependencies.py` L172–L232](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L172-L232) |
+| Does this user have a relation to this object, such as `can_write` on a document? | `require_rebac_allowed()` | [`dependencies.py` L235–L305](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L235-L305) |
+| Does this user have access at every level of a nested path, such as org → project → document? | `require_rebac_hierarchy()` | [`dependencies.py` L497](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L497) |
+| Fetch one object, and return it only if the user may see it | `get_authorized_resource()` | [`dependencies.py` L308](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L308) |
+| Keep only the objects in a list that the user may see | `filter_authorized_resources()` | [`dependencies.py` L413](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L413) |
 | Protect every route without editing each one | `TopazMiddleware` | [`middleware.py` L131](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/middleware.py#L131) |
 
 `require_policy_auto()` builds the policy name from the HTTP method and the route template:
