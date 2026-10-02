@@ -86,6 +86,48 @@ def _dependant_has_skip(dependant: Any) -> bool:
     return False
 
 
+def route_skips_middleware(route: Any) -> bool:
+    """Whether *route* opts out of TopazMiddleware.
+
+    True for an endpoint decorated with :func:`skip_middleware`, or a route
+    with ``Depends(SkipMiddleware)`` at route, router, or sub-dependency level.
+    """
+    endpoint = getattr(route, "endpoint", None)
+    if endpoint and getattr(endpoint, "__skip_topaz_middleware__", False):
+        return True
+
+    for dep in getattr(route, "dependencies", None) or []:
+        if getattr(dep, "dependency", None) is SkipMiddleware:
+            return True
+
+    dependant = getattr(route, "dependant", None)
+    return bool(dependant) and _dependant_has_skip(dependant)
+
+
+_DEFAULT_EXCLUDE_METHODS = ("OPTIONS", "HEAD")
+
+
+def middleware_exclusions(app: Any) -> tuple[list[re.Pattern[str]], set[str]] | None:
+    """Return the ``exclude_paths`` patterns and ``exclude_methods`` of *app*'s TopazMiddleware.
+
+    Read from ``app.user_middleware`` (the arguments given to
+    ``add_middleware()``). Returns ``None`` when TopazMiddleware is not installed.
+    """
+    for middleware in getattr(app, "user_middleware", None) or []:
+        if getattr(middleware, "cls", None) is not TopazMiddleware:
+            continue
+        # Starlette >= 0.35 stores kwargs; older versions store options
+        options = getattr(middleware, "kwargs", None)
+        if options is None:
+            options = getattr(middleware, "options", None) or {}
+        patterns: list[re.Pattern[str]] = [
+            re.compile(p) for p in (options.get("exclude_paths") or [])
+        ]
+        methods: set[str] = set(options.get("exclude_methods") or _DEFAULT_EXCLUDE_METHODS)
+        return patterns, methods
+    return None
+
+
 class TopazMiddleware:
     """
     FastAPI middleware for global authorization (pure ASGI).
@@ -132,7 +174,7 @@ class TopazMiddleware:
         self.app = app
         self.config = config
         self.exclude_paths = [re.compile(p) for p in (exclude_paths or [])]
-        self.exclude_methods = set(exclude_methods or ["OPTIONS", "HEAD"])
+        self.exclude_methods = set(exclude_methods or _DEFAULT_EXCLUDE_METHODS)
         self.on_missing_identity = on_missing_identity
         self.on_denied = on_denied
         self.on_error = on_error
@@ -255,22 +297,7 @@ class TopazMiddleware:
             if pattern.match(path):
                 return True
 
-        if route:
-            endpoint = getattr(route, "endpoint", None)
-            if endpoint and getattr(endpoint, "__skip_topaz_middleware__", False):
-                return True
-
-            dependencies = getattr(route, "dependencies", None) or []
-            for dep in dependencies:
-                dep_callable = getattr(dep, "dependency", None)
-                if dep_callable is SkipMiddleware:
-                    return True
-
-            dependant = getattr(route, "dependant", None)
-            if dependant and _dependant_has_skip(dependant):
-                return True
-
-        return False
+        return bool(route) and route_skips_middleware(route)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":

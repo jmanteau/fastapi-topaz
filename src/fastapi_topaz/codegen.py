@@ -17,7 +17,14 @@ from fastapi.routing import APIRoute
 from starlette.routing import Mount
 
 from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
-from ._routes import iter_frontend_paths, iter_routes, set_route_attr
+from ._routes import (
+    FrontendRoute,
+    iter_frontend_paths,
+    iter_routes,
+    match_frontend_route,
+    set_route_attr,
+)
+from .middleware import middleware_exclusions, route_skips_middleware
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -70,6 +77,8 @@ class PolicyDiff:
     valid: list[str] = field(default_factory=list)
     group_covered: list[str] = field(default_factory=list)
     default_covered: list[str] = field(default_factory=list)
+    # Routes TopazMiddleware does not authorize (skip markers, exclude_paths/methods)
+    skipped: list[str] = field(default_factory=list)
 
     @property
     def has_issues(self) -> bool:
@@ -169,6 +178,7 @@ def scan_routes(
     policy_root: str,
     exclude_paths: set[str] | None = None,
     policy_path_normalizer: Callable[[str], str] | None = None,
+    skip_detection: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Scan FastAPI app routes and extract policy information.
@@ -176,20 +186,44 @@ def scan_routes(
     Args:
         app: FastAPI application instance
         policy_root: Policy path root
-        exclude_paths: Paths to exclude (default: none; docs routes such as
-            ``/docs`` and ``/openapi.json`` are listed because the middleware
-            authorizes them)
+        exclude_paths: Paths to leave out entirely (default: none; docs routes
+            such as ``/docs`` and ``/openapi.json`` are listed because the
+            middleware authorizes them unless its ``exclude_paths`` skip them)
         policy_path_normalizer: Optional callable applied to generated policy
             paths (must match the runtime config to avoid drift)
+        skip_detection: Report routes TopazMiddleware does not authorize in
+            each entry's ``skipped`` key: ``"marker"`` (``@skip_middleware``
+            or ``Depends(SkipMiddleware)``), ``"exclude_paths"`` or
+            ``"exclude_methods"`` (the installed middleware's arguments), or
+            ``None``. ``exclude_paths`` patterns are matched against route
+            templates such as ``/docs/{id}``, not concrete URLs, so a pattern
+            written for concrete URLs (e.g. ``^/docs/\\d+$``) leaves the route
+            reported as authorized.
 
-    Returns list of route info dicts with policy_path, method, path, etc.
+    Returns list of route info dicts with policy_path, method, path, skipped, etc.
     """
     if exclude_paths is None:
         exclude_paths = DEFAULT_EXCLUDE_PATHS
 
+    exclusions = middleware_exclusions(app) if skip_detection else None
+    exclude_patterns, exclude_methods = exclusions if exclusions else ([], set())
+
+    def skip_reason(method: str, path: str, route: Any, prefix_only: bool = False) -> str | None:
+        if not skip_detection:
+            return None
+        if route is not None and route_skips_middleware(route):
+            return "marker"
+        # A mount or frontend path is a prefix: /static covers /static/x.css
+        candidates = (path, path.rstrip("/") + "/") if prefix_only else (path,)
+        if any(p.match(c) for p in exclude_patterns for c in candidates):
+            return "exclude_paths"
+        if method in exclude_methods:
+            return "exclude_methods"
+        return None
+
     routes = []
 
-    def add(method: str, path: str) -> None:
+    def add(method: str, path: str, skipped: str | None) -> None:
         policy_path = _resolve_policy_path(policy_root, method, path, policy_path_normalizer)
         routes.append(
             {
@@ -198,6 +232,7 @@ def scan_routes(
                 "path": path,
                 "route_pattern": path,
                 "auth_type": "policy",  # Default, could be detected from dependencies
+                "skipped": skipped,
             }
         )
 
@@ -205,7 +240,7 @@ def scan_routes(
         if isinstance(getattr(route, "original_route", route), Mount):
             if route.path not in exclude_paths:
                 for method in _MOUNT_METHODS:
-                    add(method, route.path)
+                    add(method, route.path, skip_reason(method, route.path, None, True))
             continue
 
         if not hasattr(route, "methods") or not hasattr(route, "path"):
@@ -219,14 +254,28 @@ def scan_routes(
         for method in api_route.methods or []:
             if method in ("HEAD", "OPTIONS"):
                 continue
-            add(method, path)
+            add(method, path, skip_reason(method, path, route))
 
     # Frontend routes serve GET and HEAD; HEAD is skipped as above
     for path in iter_frontend_paths(app):
         if path not in exclude_paths:
-            add("GET", path)
+            frontend = _frontend_route_for(app, path) if skip_detection else None
+            add("GET", path, skip_reason("GET", path, frontend, True))
 
     return routes
+
+
+def _frontend_route_for(app: FastAPI, path: str) -> FrontendRoute | None:
+    """Match *path* the way a request to it would, to get the frontend's merged dependencies."""
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": path,
+        "root_path": "",
+        "query_string": b"",
+        "headers": [],
+    }
+    return match_frontend_route(app, scope)
 
 
 def generate_policies(
@@ -352,6 +401,10 @@ def policy_diff(
         policy_path = route_info["policy_path"]
         route_path = route_info["route_pattern"]
 
+        if route_info["skipped"]:
+            diff.skipped.append(policy_path)
+            continue
+
         if policy_path in existing_policies:
             diff.valid.append(policy_path)
             continue
@@ -412,7 +465,7 @@ class RouteResolution:
     route_pattern: str
     specific_policy_path: str
     resolved_policy_path: str
-    resolution_source: str  # "explicit" | "group" | "default" | "generated"
+    resolution_source: str  # "explicit" | "group" | "default" | "generated" | "skipped"
     matched_group_pattern: str | None
     policy_file_exists: bool
 
@@ -458,8 +511,10 @@ def generate_rights_matrix(
         source = "generated"
         matched_pattern: str | None = None
 
-        # Resolution chain
-        if policies_dir is not None and specific in existing:
+        # Resolution chain; the middleware never checks skipped routes
+        if route_info["skipped"]:
+            resolved, source = "", "skipped"
+        elif policies_dir is not None and specific in existing:
             resolved, source = specific, "explicit"
         else:
             for compiled_pattern, group_pp in compiled_groups:
@@ -478,7 +533,7 @@ def generate_rights_matrix(
                 resolved_policy_path=resolved,
                 resolution_source=source,
                 matched_group_pattern=matched_pattern,
-                policy_file_exists=resolved in existing,
+                policy_file_exists=bool(resolved) and resolved in existing,
             )
         )
 
@@ -507,6 +562,10 @@ def annotate_openapi(
     ``openapi_extra``. Existing ``openapi_extra`` keys are preserved. When
     the methods of one route resolve differently, both keys are written as
     ``{method: value}`` maps sorted by method; otherwise they are strings.
+    Routes TopazMiddleware does not authorize (``@skip_middleware``,
+    ``Depends(SkipMiddleware)``, or the installed middleware's
+    ``exclude_paths`` / ``exclude_methods``) get ``x-authz-source: skipped``
+    and no ``x-authz-policy`` entry.
 
     Call after route registration and before the first schema build (the
     schema is cached on first access to ``app.openapi()``). This includes
@@ -540,24 +599,25 @@ def annotate_openapi(
         }
         if not by_method:
             continue
+        extra = {**(api_route.openapi_extra or {})}
         pairs = {(r.resolved_policy_path, r.resolution_source) for r in by_method.values()}
-        policy: str | dict[str, str]
-        source: str | dict[str, str]
+        # TopazMiddleware never checks skipped methods: they claim no policy
+        checked = {m: r for m, r in by_method.items() if r.resolution_source != "skipped"}
         if len(pairs) == 1:
             policy, source = next(iter(pairs))
+            extra["x-authz-source"] = source
+            if checked:
+                extra["x-authz-policy"] = policy
+            else:
+                extra.pop("x-authz-policy", None)
         else:
             # Methods resolve differently (e.g. only GET has an explicit file)
-            policy = {m: r.resolved_policy_path for m, r in by_method.items()}
-            source = {m: r.resolution_source for m, r in by_method.items()}
-        set_route_attr(
-            route,
-            "openapi_extra",
-            {
-                **(api_route.openapi_extra or {}),
-                "x-authz-policy": policy,
-                "x-authz-source": source,
-            },
-        )
+            extra["x-authz-source"] = {m: r.resolution_source for m, r in by_method.items()}
+            if checked:
+                extra["x-authz-policy"] = {m: r.resolved_policy_path for m, r in checked.items()}
+            else:
+                extra.pop("x-authz-policy", None)
+        set_route_attr(route, "openapi_extra", extra)
         annotated += 1
 
     return annotated
@@ -573,6 +633,7 @@ def _write_rights_matrix_markdown(
     group = [r for r in results if r.resolution_source == "group"]
     default = [r for r in results if r.resolution_source == "default"]
     unresolved = [r for r in results if r.resolution_source == "generated"]
+    skipped = [r for r in results if r.resolution_source == "skipped"]
 
     lines: list[str] = [
         f"# Rights Matrix — {policy_root}",
@@ -584,6 +645,7 @@ def _write_rights_matrix_markdown(
         f"- Group-covered: {len(group)}",
         f"- Default-covered: {len(default)}",
         f"- **Unresolved: {len(unresolved)}**",
+        f"- Skipped (not authorized by TopazMiddleware): {len(skipped)}",
         "",
         "## Routes by Resolution Source",
         "",
@@ -596,10 +658,11 @@ def _write_rights_matrix_markdown(
         if r.matched_group_pattern:
             source_label = f"group ({r.matched_group_pattern})"
         exists = "Y" if r.policy_file_exists else "N"
-        lines.append(
-            f"| {r.method} | {r.route_pattern} | "
-            f"{r.resolved_policy_path} | {source_label} | {exists} |"
-        )
+        resolved = r.resolved_policy_path
+        if r.resolution_source == "skipped":
+            source_label = "skipped (not authorized by TopazMiddleware)"
+            resolved, exists = "—", "—"
+        lines.append(f"| {r.method} | {r.route_pattern} | {resolved} | {source_label} | {exists} |")
 
     lines.append("")
     output_path.write_text("\n".join(lines))

@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `PolicyDiff.skipped` and the `"skipped"` value for `RouteResolution.resolution_source`, for routes `TopazMiddleware` does not authorize
+
 ### Fixed
+
+- `annotate_openapi`, `generate_rights_matrix`, `policy-diff` and the `check` CLI command now report routes `TopazMiddleware` never checks as `skipped`, instead of as authorized by the resolution chain. That covers `@skip_middleware`, `Depends(SkipMiddleware)` at route or router level (frontend routes included), and the installed middleware's `exclude_paths` and `exclude_methods`, with `exclude_paths` matched against route templates. Skipped operations get `x-authz-source: skipped` and no `x-authz-policy`. `policy-diff` no longer reports a skipped route as missing
 
 - `require_policy_auto` now includes `include_router()` prefixes on FastAPI 0.137+; it previously checked the un-prefixed route path (e.g. `myapp.POST` instead of `myapp.POST.api.folders` for a router included under `/api/folders`). When the route path cannot be resolved it fails with 500 instead of falling back to the un-prefixed path
 - Dependencies (`require_policy_allowed`, `require_policy_auto`, `require_rebac_allowed`, `get_authorized_resource`, `filter_authorized_resources`, `require_rebac_hierarchy`) now return 503 when the authorizer call fails and the circuit breaker gives no fallback decision (for example `INVALID_ARGUMENT` for a missing policy, or any error without a breaker); the error previously escaped as an unhandled 500. With `expose_deny_reason=True` the body names the policy, source and error type
