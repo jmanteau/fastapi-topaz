@@ -32,6 +32,10 @@ fastapi-topaz generate-policies \
 
 Existing policy files are kept by default, so hand-edited policies survive a rerun; pass `--overwrite` to replace them.
 
+Routes covered by a policy group or by `default_policy` get no skeleton: the middleware resolves them to the group or default policy, so a per-route file would never be evaluated and could hide that the effective policy is less strict. `{root}.check` is always generated.
+
+Typed path parameters drop their converter in the policy path, so `/files/{path:path}` maps to `myapp.GET.files.__path` and `/items/{id:int}` to `myapp.GET.items.__id`.
+
 ### Validate Policies (CI Integration)
 
 ```bash
@@ -54,6 +58,8 @@ Summary: 1 missing, 1 orphaned
 Exit code: 1
 ```
 
+A route matched by a policy group is resolved by the first matching group only, like the middleware: if that group's `.rego` file is missing, the route is reported missing even when a later group or the default policy has a file.
+
 ### Generate Route Map
 
 ```bash
@@ -68,6 +74,10 @@ Output:
 | /documents | POST | myapp.POST.documents | OK |
 | /documents/{id} | DELETE | myapp.DELETE.documents.__id | Missing |
 ```
+
+### Documentation Routes
+
+The OpenAPI and docs routes (`/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc`) are scanned like any other route, because the middleware authorizes them unless you exclude them. To leave them out, disable them on the app (`FastAPI(openapi_url=None, docs_url=None, redoc_url=None)`); `scan_routes(exclude_paths=...)` also accepts a set of exact paths to skip.
 
 ### Frontend Routes and Mounts
 
@@ -201,7 +211,14 @@ count = annotate_openapi(app, config, policies_dir="policies/")
 print(f"Annotated {count} routes")
 ```
 
-Resolution follows the same chain as the rights matrix: explicit `.rego` file (when `policies_dir` is given) > policy group > default policy > generated path. Existing `openapi_extra` values on routes are preserved.
+Resolution follows the same chain as the rights matrix: explicit `.rego` file (when `policies_dir` is given) > policy group > default policy > generated path. Existing `openapi_extra` values on routes are preserved. Only API routes are annotated; Starlette routes such as the docs pages are not part of the schema.
+
+When the methods of one route resolve differently (for example a policy group that matches only `GET`), `x-authz-policy` and `x-authz-source` are written as objects keyed by method, sorted by method name, instead of strings:
+
+```json
+"x-authz-policy": {"GET": "myapp.reads", "POST": "myapp.POST.items"},
+"x-authz-source": {"GET": "group", "POST": "generated"}
+```
 
 On FastAPI 0.137 and later, run `annotate_openapi()` after all routes are registered, including routes added to a router after it was passed to `include_router()`: FastAPI rebuilds that router's route contexts and the annotations on them are lost.
 

@@ -22,6 +22,7 @@ def _policy_path_heuristic(path: str) -> str:
         "/documents" -> ".documents"
         "/documents/{id}" -> ".documents.__id"
         "/users/{user_id}/docs/{doc_id}" -> ".users.__user_id.docs.__doc_id"
+        "/files/{name:path}" -> ".files.__name"
     """
     if not path or path == "/":
         return ""
@@ -33,10 +34,10 @@ def _policy_path_heuristic(path: str) -> str:
     for segment in segments:
         if not segment:
             continue
-        # Check if it's a path parameter (e.g., {id} or {user_id})
+        # Check if it's a path parameter (e.g., {id}, {user_id}, {file:path})
         if segment.startswith("{") and segment.endswith("}"):
-            # Convert {param} to __param
-            param_name = segment[1:-1]
+            # Convert {param} to __param, dropping any :converter suffix
+            param_name = segment[1:-1].split(":", 1)[0]
             result_parts.append(f"__{param_name}")
         else:
             result_parts.append(segment)
