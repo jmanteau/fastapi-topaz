@@ -82,9 +82,9 @@ Pick the check that matches your question. Not sure which one? Read [Choosing an
 | May this user call this route? (you name the policy) | `require_policy_allowed()` | [`dependencies.py` L143–L175](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L143-L175) |
 | May this user call this route? (policy name built from the route) | `require_policy_auto()` | [`dependencies.py` L178–L238](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L178-L238) |
 | Does this user have a relation to this object, such as `can_write` on a document? | `require_rebac_allowed()` | [`dependencies.py` L241–L311](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L241-L311) |
-| Does this user have access at every level of a nested path, such as org → project → document? | `require_rebac_hierarchy()` | [`dependencies.py` L494](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L494) |
+| Does this user have access at every level of a nested path, such as org → project → document? | `require_rebac_hierarchy()` | [`dependencies.py` L503](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L503) |
 | Fetch one object, and return it only if the user may see it | `get_authorized_resource()` | [`dependencies.py` L314](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L314) |
-| Keep only the objects in a list that the user may see | `filter_authorized_resources()` | [`dependencies.py` L410](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L410) |
+| Keep only the objects in a list that the user may see | `filter_authorized_resources()` | [`dependencies.py` L419](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/dependencies.py#L419) |
 | Protect every route without editing each one | `TopazMiddleware` | [`middleware.py` L131](https://github.com/jmanteau/fastapi-topaz/blob/main/src/fastapi_topaz/middleware.py#L131) |
 
 `require_policy_auto()` builds the policy name from the HTTP method and the route template:
