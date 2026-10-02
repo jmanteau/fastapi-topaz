@@ -43,6 +43,7 @@ class MockArgs:
     config: str | None = None
     root: str | None = None
     dry_run: bool = False
+    overwrite: bool = False
     policies: str | None = None
     strict: bool = False
     format: str = "text"
@@ -128,6 +129,23 @@ class TestGeneratePolicies:
             output_path = Path(tmpdir)
             rego_files = list(output_path.rglob("*.rego"))
             assert len(rego_files) > 0
+
+    def test_existing_files_skipped_without_overwrite(self, temp_app_module, tmp_path, capsys):
+        args = MockArgs(app=temp_app_module, output=str(tmp_path), root="testapp")
+        cmd_generate_policies(args)
+        target = next(tmp_path.rglob("*.rego"))
+        generated = target.read_text()
+        target.write_text("# custom policy\n")
+        capsys.readouterr()
+
+        assert cmd_generate_policies(args) == 0
+        assert target.read_text() == "# custom policy\n"
+        assert "SKIP" in capsys.readouterr().out
+
+        args.overwrite = True
+        assert cmd_generate_policies(args) == 0
+        assert target.read_text() == generated
+        assert "SKIP" not in capsys.readouterr().out
 
     def test_dry_run(self, temp_app_module, capsys):
         args = MockArgs(app=temp_app_module, root="testapp", dry_run=True)

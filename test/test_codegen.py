@@ -150,6 +150,17 @@ class TestGeneratePolicies:
             rego_files = list(output_path.rglob("*.rego"))
             assert len(rego_files) == len(policies)
 
+    def test_existing_file_kept_unless_overwrite(self, sample_app, config, tmp_path):
+        policies = generate_policies(sample_app, config, output_dir=tmp_path)
+        target = tmp_path / f"{next(iter(policies)).replace('.', '/')}.rego"
+        target.write_text("# custom policy\n")
+
+        generate_policies(sample_app, config, output_dir=tmp_path)
+        assert target.read_text() == "# custom policy\n"
+
+        generate_policies(sample_app, config, output_dir=tmp_path, overwrite=True)
+        assert target.read_text() == policies[next(iter(policies))]
+
     def test_custom_template(self, sample_app, config):
         template = PolicyTemplate(
             default_decision=True,

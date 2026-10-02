@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Policy generation, `policy-diff`, the rights matrix and the `check` CLI command now include frontend routes (one `GET` entry per mount path) and mounts (one entry each for `GET`, `POST`, `PUT`, `PATCH`, `DELETE`), which the middleware already authorizes; previously `policy-diff` reported them in sync while the middleware denied them at runtime
 - `TopazMiddleware` now fails closed with 403 for any breakage in FastAPI's private frontend matching internals, not only a missing matcher; other changes previously produced a 500
 - With a root frontend (`app.frontend("/")`), requests FastAPI answers with a trailing-slash redirect are no longer checked against the frontend policy, so a deny no longer replaces the redirect with a 403
+- The circuit breaker no longer locks up in half-open: a successful probe now frees its slot, so with the defaults (`success_threshold=2`, `half_open_max_requests=1`) the second probe is allowed and the circuit closes. A probe that is cancelled or fails with a non-failure gRPC code (e.g. `INVALID_ARGUMENT`) also frees its slot instead of forcing the fallback forever
+- A decision-cache write error (e.g. `OSError` from a custom backend) in `check_decision` or batched `check_relations` now propagates and fails closed; previously it counted as a breaker failure and could serve a stale cached allow over a fresh deny
+- `generate_policies` and `fastapi-topaz generate-policies` no longer overwrite existing `.rego` files. Behavior change: existing files are skipped (the CLI prints `SKIP`) unless you pass `overwrite=True` / `--overwrite`, which the docs already described
 
 ### Changed
 

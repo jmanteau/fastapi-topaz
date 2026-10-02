@@ -6,6 +6,7 @@ Generate Rego policy skeletons from FastAPI routes and validate policies at star
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     from fastapi.routing import APIRoute
 
     from .dependencies import TopazConfig
+
+logger = logging.getLogger("fastapi_topaz.codegen")
 
 __all__ = [
     "annotate_openapi",
@@ -233,6 +236,7 @@ def generate_policies(
     config: TopazConfig,
     output_dir: str | Path | None = None,
     template: PolicyTemplate | None = None,
+    overwrite: bool = False,
 ) -> dict[str, str]:
     """
     Generate Rego policy skeletons from FastAPI routes.
@@ -242,6 +246,7 @@ def generate_policies(
         config: TopazConfig with policy_path_root
         output_dir: Optional directory to write policy files
         template: Optional template configuration
+        overwrite: Replace existing policy files (default keeps them)
 
     Returns:
         Dict mapping policy paths to Rego content
@@ -275,11 +280,19 @@ def generate_policies(
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         for policy_path, content in policies.items():
-            file_path = output_path / f"{policy_path.replace('.', '/')}.rego"
+            file_path = _policy_file(output_path, policy_path)
+            if file_path.exists() and not overwrite:
+                logger.warning(f"Skipping existing policy file {file_path} (use overwrite=True)")
+                continue
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content)
 
     return policies
+
+
+def _policy_file(output_dir: Path, policy_path: str) -> Path:
+    """Return the .rego file path for a policy path under output_dir."""
+    return output_dir / f"{policy_path.replace('.', '/')}.rego"
 
 
 def policy_diff(

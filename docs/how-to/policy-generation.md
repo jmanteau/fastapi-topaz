@@ -30,6 +30,8 @@ fastapi-topaz generate-policies \
   --format flat
 ```
 
+Existing policy files are kept by default, so hand-edited policies survive a rerun; pass `--overwrite` to replace them.
+
 ### Validate Policies (CI Integration)
 
 ```bash

@@ -29,6 +29,8 @@ Options:
 | `--dry-run` | No | Print policies without writing files |
 | `--format` | No | Output format: `nested` (default) or `flat` |
 
+Existing policy files are kept by default and reported as `SKIP`; pass `--overwrite` to replace them.
+
 Example:
 
 ```bash

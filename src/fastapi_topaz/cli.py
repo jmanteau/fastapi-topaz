@@ -41,7 +41,7 @@ def import_config(config_path: str):
 
 def cmd_generate_policies(args: argparse.Namespace) -> int:
     """Generate policy skeletons from FastAPI routes."""
-    from .codegen import PolicyTemplate, generate_policies
+    from .codegen import PolicyTemplate, _policy_file, generate_policies
 
     app = import_app(args.app)
 
@@ -74,11 +74,21 @@ def cmd_generate_policies(args: argparse.Namespace) -> int:
         return 0
 
     output = Path(args.output) if args.output else Path("policies")
-    policies = generate_policies(app, config, output_dir=output, template=template)
+    # efficiency: a write-less pass lists target files so pre-existing ones can be reported
+    existing = set()
+    if not args.overwrite:
+        planned = generate_policies(app, config, template=template)
+        existing = {p for p in planned if _policy_file(output, p).exists()}
+    policies = generate_policies(
+        app, config, output_dir=output, template=template, overwrite=args.overwrite
+    )
 
     print(f"Generated {len(policies)} policies in {output}/")
     for path in sorted(policies.keys()):
-        print(f"  OK {path}")
+        if path in existing:
+            print(f"  SKIP {path} (exists, use --overwrite)")
+        else:
+            print(f"  OK {path}")
 
     return 0
 
@@ -315,6 +325,7 @@ def main() -> int:
     gen.add_argument("--config", help="TopazConfig (module:attribute)")
     gen.add_argument("--root", help="Policy path root (default: app)")
     gen.add_argument("--dry-run", action="store_true", help="Preview without writing")
+    gen.add_argument("--overwrite", action="store_true", help="Replace existing policy files")
     gen.set_defaults(func=cmd_generate_policies)
 
     # policy-diff

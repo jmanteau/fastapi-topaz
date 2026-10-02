@@ -853,3 +853,71 @@ class TestConfigSmallGaps:
         ctx = config._authorizer.decisions.call_args.kwargs["resource_context"]
         assert ctx["tenant"] == "acme"
         assert ctx["object_type"] == "document"
+
+
+class _FlakyCacheBackend:
+    """CacheBackend whose set() raises OSError once fail_writes is on."""
+
+    def __init__(self):
+        self.fail_writes = False
+
+    async def get(self, identity_value, policy_path, decision, resource_context):
+        return None
+
+    async def set(self, identity_value, policy_path, decision, resource_context, value):
+        if self.fail_writes:
+            raise OSError("cache backend down")
+
+    def clear(self):
+        pass
+
+    def size(self):
+        return 0
+
+
+class TestCacheWriteErrorFailsClosed:
+    """A cache-write error must propagate, never become a stale-cache fallback."""
+
+    def _mock_request(self):
+        request = Mock(spec=Request)
+        request.path_params = {}
+        return request
+
+    def _config(self, wire_side_effect):
+        from fastapi_topaz.circuit_breaker import CircuitBreaker
+
+        cache = _FlakyCacheBackend()
+        config = _make_config(
+            decision_cache=cache, circuit_breaker=CircuitBreaker(fallback="cache_then_deny")
+        )
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(side_effect=wire_side_effect)
+        return config, cache
+
+    async def test_check_decision_raises_instead_of_serving_stale_allow(self):
+        config, cache = self._config([{"allowed": True}, {"allowed": False}])
+        assert await config.check_decision(self._mock_request(), "test.GET.docs", "allowed")
+
+        cache.fail_writes = True
+        with pytest.raises(OSError):
+            await config.check_decision(self._mock_request(), "test.GET.docs", "allowed")
+        assert config.circuit_breaker._failure_count == 0
+
+    async def test_batch_raises_instead_of_serving_stale_allow(self):
+        config, cache = self._config([{"can_read": True}, {"can_read": False}])
+
+        async def check():
+            return await config.check_relations(
+                self._mock_request(),
+                object_type="document",
+                object_id="42",
+                relations=["can_read"],
+                batch=True,
+            )
+
+        assert await check() == {"can_read": True}
+
+        cache.fail_writes = True
+        with pytest.raises(OSError):
+            await check()
+        assert config.circuit_breaker._failure_count == 0

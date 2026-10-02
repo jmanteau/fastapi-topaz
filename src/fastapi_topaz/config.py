@@ -501,6 +501,35 @@ class TopazConfig:
             reason=reason,
         )
 
+    async def _call_authorizer(
+        self,
+        identity: Identity,
+        policy_path: str,
+        decisions: tuple[str, ...],
+        resource_context: ResourceContext | None,
+    ) -> dict[str, bool]:
+        """Call Topaz and report the outcome to the circuit breaker."""
+        try:
+            results = await self._authorizer.decisions(
+                identity=identity,
+                policy_path=policy_path,
+                decisions=decisions,
+                policy_instance_name=self.policy_instance_name,
+                policy_instance_label=self.policy_instance_label,
+                resource_context=resource_context,
+                timeout=self.check_timeout,
+            )
+        except BaseException as e:
+            if self.circuit_breaker:
+                if isinstance(e, Exception) and self.circuit_breaker.is_failure_exception(e):
+                    await self.circuit_breaker.record_failure(e)
+                else:
+                    self.circuit_breaker.release_probe()
+            raise
+        if self.circuit_breaker:
+            await self.circuit_breaker.record_success()
+        return results
+
     async def _check_decisions_batch(
         self,
         request: Request,
@@ -568,41 +597,19 @@ class TopazConfig:
                     results[decision] = result
                     cached_flags[decision] = False
             else:
+                wire_results: dict[str, bool] | None = None
                 try:
                     topaz_start = time.monotonic()
-                    wire_results = await self._authorizer.decisions(
-                        identity=identity,
-                        policy_path=policy_path,
-                        decisions=tuple(misses),
-                        policy_instance_name=self.policy_instance_name,
-                        policy_instance_label=self.policy_instance_label,
-                        resource_context=resource_context,
-                        timeout=self.check_timeout,
+                    wire_results = await self._call_authorizer(
+                        identity, policy_path, tuple(misses), resource_context
                     )
                     if self.metrics:
                         self.metrics.record_topaz_latency(time.monotonic() - topaz_start)
-                    if self.circuit_breaker:
-                        await self.circuit_breaker.record_success()
-
-                    for decision in misses:
-                        result = wire_results.get(decision, False)
-                        results[decision] = result
-                        cached_flags[decision] = False
-                        if self.decision_cache:
-                            await self.decision_cache.set(
-                                identity_value, policy_path, decision, resource_context, result
-                            )
-                        await self._set_stale_cached(
-                            identity_value, policy_path, decision, resource_context, result
-                        )
-                    if self.decision_cache and self.metrics:
-                        self.metrics.set_cache_size(self.decision_cache.size())
                 except Exception as e:
                     if self.metrics:
                         self.metrics.record_error(type(e).__name__)
                     if not (self.circuit_breaker and self.circuit_breaker.is_failure_exception(e)):
                         raise
-                    await self.circuit_breaker.record_failure(e)
                     reason = "authorizer_error"
                     for decision in misses:
                         stale = await self._get_stale_cached(
@@ -621,6 +628,23 @@ class TopazConfig:
                             )
                         results[decision] = result
                         cached_flags[decision] = False
+
+                # Cache writes stay outside the try: a backend error must not
+                # turn into a fallback decision
+                if wire_results is not None:
+                    for decision in misses:
+                        result = wire_results.get(decision, False)
+                        results[decision] = result
+                        cached_flags[decision] = False
+                        if self.decision_cache:
+                            await self.decision_cache.set(
+                                identity_value, policy_path, decision, resource_context, result
+                            )
+                        await self._set_stale_cached(
+                            identity_value, policy_path, decision, resource_context, result
+                        )
+                    if self.decision_cache and self.metrics:
+                        self.metrics.set_cache_size(self.decision_cache.size())
 
         latency_seconds = time.monotonic() - start_time
         latency_ms = latency_seconds * 1000
@@ -740,51 +764,19 @@ class TopazConfig:
 
             # Make the authorization call over the shared channel
             topaz_start = time.monotonic()
-            decisions_result = await self._authorizer.decisions(
-                identity=identity,
-                policy_path=policy_path,
-                decisions=(decision,),
-                policy_instance_name=self.policy_instance_name,
-                policy_instance_label=self.policy_instance_label,
-                resource_context=resource_context,
-                timeout=self.check_timeout,
-            )
-            result = decisions_result.get(decision, False)
-            topaz_latency = time.monotonic() - topaz_start
-
-            if self.metrics:
-                self.metrics.record_topaz_latency(topaz_latency)
-
-            # Record success with circuit breaker
-            if self.circuit_breaker:
-                await self.circuit_breaker.record_success()
-
-            # Cache the result
-            if self.decision_cache:
-                await self.decision_cache.set(
-                    identity_value, policy_path, decision, resource_context, result
+            try:
+                decisions_result = await self._call_authorizer(
+                    identity, policy_path, (decision,), resource_context
                 )
+            except Exception as e:
+                # Check if this is a failure that should trip the circuit breaker
+                if not (self.circuit_breaker and self.circuit_breaker.is_failure_exception(e)):
+                    raise
                 if self.metrics:
-                    self.metrics.set_cache_size(self.decision_cache.size())
-
-            # Store in stale cache for circuit breaker fallback
-            await self._set_stale_cached(
-                identity_value, policy_path, decision, resource_context, result
-            )
-
-            return result
-
-        except Exception as e:
-            check_error = e
-            if self.metrics:
-                self.metrics.record_error(type(e).__name__)
-            if self.tracing and span:
-                self.tracing.record_error(span, e)
-                span = None  # Don't end span twice
-
-            # Check if this is a failure that should trip the circuit breaker
-            if self.circuit_breaker and self.circuit_breaker.is_failure_exception(e):
-                await self.circuit_breaker.record_failure(e)
+                    self.metrics.record_error(type(e).__name__)
+                if self.tracing and span:
+                    self.tracing.record_error(span, e)
+                    span = None  # Don't end span twice
 
                 # Try fallback
                 stale_cached = await self._get_stale_cached(
@@ -816,10 +808,37 @@ class TopazConfig:
                         logger.error(f"Error in on_fallback callback: {cb_error}")
 
                 # Fallback produced a decision — not a propagating error
-                check_error = None
                 return result
 
-            # Not a circuit breaker failure, re-raise
+            result = decisions_result.get(decision, False)
+            topaz_latency = time.monotonic() - topaz_start
+
+            if self.metrics:
+                self.metrics.record_topaz_latency(topaz_latency)
+
+            # Cache writes stay outside the inner try: a backend error must not
+            # turn into a fallback decision
+            if self.decision_cache:
+                await self.decision_cache.set(
+                    identity_value, policy_path, decision, resource_context, result
+                )
+                if self.metrics:
+                    self.metrics.set_cache_size(self.decision_cache.size())
+
+            # Store in stale cache for circuit breaker fallback
+            await self._set_stale_cached(
+                identity_value, policy_path, decision, resource_context, result
+            )
+
+            return result
+
+        except Exception as e:
+            check_error = e
+            if self.metrics:
+                self.metrics.record_error(type(e).__name__)
+            if self.tracing and span:
+                self.tracing.record_error(span, e)
+                span = None  # Don't end span twice
             raise
 
         finally:

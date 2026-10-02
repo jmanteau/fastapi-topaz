@@ -495,3 +495,59 @@ class TestDeprecatedKnobs:
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             CircuitBreaker()
+
+
+class TestHalfOpenProbeSlots:
+    """Half-open probe slots must be freed so recovery can complete."""
+
+    async def test_default_thresholds_close_after_two_probes(self):
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
+        await cb.record_failure(ConnectionError("down"))
+        await asyncio.sleep(0.02)
+
+        assert await cb.should_allow_request() is True
+        await cb.record_success()
+        assert cb.state == CircuitState.HALF_OPEN
+        assert await cb.should_allow_request() is True
+        await cb.record_success()
+        assert cb.state == CircuitState.CLOSED
+
+    def _config(self, authorizer_options, identity_provider, side_effect):
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01, fallback="deny")
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="test",
+            identity_provider=identity_provider,
+            policy_instance_name="test",
+            circuit_breaker=cb,
+        )
+        config._authorizer = Mock()
+        config._authorizer.decisions = AsyncMock(side_effect=side_effect)
+        return config
+
+    def _request(self):
+        request = Mock(spec=Request)
+        request.path_params = {}
+        return request
+
+    @pytest.mark.parametrize(
+        "probe_error",
+        [_FakeRpcError(grpc.StatusCode.INVALID_ARGUMENT), asyncio.CancelledError()],
+        ids=["invalid_argument", "cancelled"],
+    )
+    async def test_probe_without_verdict_frees_slot(
+        self, authorizer_options, identity_provider, probe_error
+    ):
+        config = self._config(
+            authorizer_options,
+            identity_provider,
+            [ConnectionError("down"), probe_error, {"allowed": True}],
+        )
+        assert await config.check_decision(self._request(), "test.GET.x", "allowed") is False
+        await asyncio.sleep(0.02)
+
+        with pytest.raises(type(probe_error)):
+            await config.check_decision(self._request(), "test.GET.x", "allowed")
+
+        assert await config.check_decision(self._request(), "test.GET.x", "allowed") is True
+        assert config._authorizer.decisions.await_count == 3
