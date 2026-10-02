@@ -7,10 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A major release: the APIs deprecated in 1.2 are removed, and several changes need action when upgrading. See [Upgrading to 2.0](https://jmanteau.github.io/fastapi-topaz/how-to/upgrading-to-2/).
+
 ### Added
 
 - `CircuitBreaker.admit()` returns an `Admission` ticket (exported from the package root) to pass back to `record_success`, `record_failure` and `release_probe`; `should_allow_request()` still works and returns a bool
 - `PolicyDiff.skipped` and the `"skipped"` value for `RouteResolution.resolution_source`, for routes `TopazMiddleware` does not authorize
+
+### Changed
+
+- Breaking: one `TopazConfig(on_error="deny" | "unavailable")` setting decides how the middleware and every dependency answer a failed authorization call: `"deny"` (default) gives 403, `"unavailable"` gives 503 `{"detail": "Authorization service unavailable"}` with `Retry-After` from the circuit breaker's `recovery_timeout`. `TopazMiddleware(on_error=...)` now defaults to `None` (use the config) and still overrides it. With `expose_deny_reason=True` the body adds `policy`, `source` and `error`
+- Documented that on FastAPI 0.137+ `annotate_openapi` must run after routes are added to routers already passed to `include_router()`
+- Breaking for custom cache backends: `CacheBackend.get` and `CacheBackend.set` (and `DecisionCache.get`/`set`) take keyword-only `identity_type` and `policy_instance` arguments, which the library passes on every call; add them (or `**kwargs`) to custom backends. Existing cache entries are not reused after upgrading because the key format changed
+- Path parameters no longer override trusted resource context: the policy resource context is merged as path params, then static `resource_context`, then `resource_context_provider`, so a provider's `tenant_id` wins over a `/tenants/{tenant_id}` URL value. Applies to dependencies, the middleware and `is_allowed`
+- Codegen no longer excludes the docs routes (`/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc`) by default, since the middleware authorizes them; `scan_routes`, `generate_policies`, `policy_diff` and the rights matrix now list them. Disable them on the app or pass `exclude_paths` to `scan_routes` to leave them out
+- `install_mock` also patches `identity_provider`: tests get `MockTopazConfig.identity_returns` as an `IDENTITY_TYPE_SUB` identity (or an unauthenticated identity for `None`) instead of the config's own provider
+- CLI commands exit with code 2 instead of 1 when the app or config cannot be imported
+- The integration-test webapp runs on current FastAPI again (it was pinned below 0.122), and its image takes a `FASTAPI_SPEC` build argument to test other route layouts
+
+### Removed
+
+- `fastapi_topaz.AuthorizationError` and the `IdentityMapper`, `StringMapper`, `ObjectMapper` and `ResourceMapper` type aliases, deprecated in 1.2.0, from the package and from `fastapi_topaz._defaults`. Nothing raised `AuthorizationError`; denials are `HTTPException(403)`, so `except AuthorizationError` blocks are dead code and can be deleted
+- `CircuitBreaker(timeout_ms=...)` and `CircuitBreaker(cache_priority=...)`, deprecated in 1.2.0; neither had any effect. Passing them now raises `TypeError`. Set the per-call deadline with `TopazConfig(check_timeout=seconds)`
+- `TopazConfig.create_client()`, deprecated in 1.2.0. It opened a new channel per call that the caller had to close, and bypassed the cache and circuit breaker. Use `is_allowed`, `check_relation` or the dependencies. The integration webapp's share endpoint used it without awaiting the async client, so its policy check never ran; it now uses `is_allowed`
+- `ConnectionPool`, `PoolStatus` and `TopazConfig(connection_pool=...)`, deprecated in 1.2.0. They had no effect: authorization checks share one gRPC channel per `TopazConfig`. Delete the argument
 
 ### Fixed
 
@@ -40,29 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `annotate_openapi` writes `x-authz-policy` / `x-authz-source` as `{method: value}` maps when a route's methods resolve differently (previously the first method won), and skips non-API routes
 - The `fastapi-topaz` console script adds the working directory to `sys.path`, so `--app myapp:app` finds `./myapp.py`
 - `fastapi-topaz policy-map` accepts `--config` and uses its `policy_path_root` and `policy_path_normalizer`
-- `from fastapi_topaz import *` no longer emits `DeprecationWarning`s: deprecated aliases are removed from `__all__` (they remain importable by name)
-- `AuthorizationError` can be raised through `contextlib.contextmanager` and other code that sets `__traceback__`; it was a frozen dataclass and raised `FrozenInstanceError`
 - `require_rebac_allowed` and `get_authorized_resource` with a static `object_id=""`, an id source of `"static:"`, and `TopazConfig(max_concurrent_checks=0)` now raise `ValueError` at construction
 - `MockTopazConfig` supports `check_relations(batch=True)`, and `install_mock` patches the batched path, so batched checks no longer reach the real authorizer in tests
-- `ConnectionPool.close()` no longer closes connections still held by callers; they are closed when released. `health_check_interval`, `health_check_timeout`, `retry_on_failure` and `max_retries` are documented as having no effect
-
-### Changed
-
-- Breaking: one `TopazConfig(on_error="deny" | "unavailable")` setting decides how the middleware and every dependency answer a failed authorization call: `"deny"` (default) gives 403, `"unavailable"` gives 503 `{"detail": "Authorization service unavailable"}` with `Retry-After` from the circuit breaker's `recovery_timeout`. `TopazMiddleware(on_error=...)` now defaults to `None` (use the config) and still overrides it. With `expose_deny_reason=True` the body adds `policy`, `source` and `error`
-- Documented that on FastAPI 0.137+ `annotate_openapi` must run after routes are added to routers already passed to `include_router()`
-- Breaking for custom cache backends: `CacheBackend.get` and `CacheBackend.set` (and `DecisionCache.get`/`set`) take keyword-only `identity_type` and `policy_instance` arguments, which the library passes on every call; add them (or `**kwargs`) to custom backends. Existing cache entries are not reused after upgrading because the key format changed
-- Path parameters no longer override trusted resource context: the policy resource context is merged as path params, then static `resource_context`, then `resource_context_provider`, so a provider's `tenant_id` wins over a `/tenants/{tenant_id}` URL value. Applies to dependencies, the middleware and `is_allowed`
-- Codegen no longer excludes the docs routes (`/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc`) by default, since the middleware authorizes them; `scan_routes`, `generate_policies`, `policy_diff` and the rights matrix now list them. Disable them on the app or pass `exclude_paths` to `scan_routes` to leave them out
-- `install_mock` also patches `identity_provider`: tests get `MockTopazConfig.identity_returns` as an `IDENTITY_TYPE_SUB` identity (or an unauthenticated identity for `None`) instead of the config's own provider
-- CLI commands exit with code 2 instead of 1 when the app or config cannot be imported
-- The integration-test webapp runs on current FastAPI again (it was pinned below 0.122), and its image takes a `FASTAPI_SPEC` build argument to test other route layouts
-
-### Removed
-
-- `fastapi_topaz.AuthorizationError` and the `IdentityMapper`, `StringMapper`, `ObjectMapper` and `ResourceMapper` type aliases, deprecated in 1.2.0, from the package and from `fastapi_topaz._defaults`. Nothing raised `AuthorizationError`; denials are `HTTPException(403)`, so `except AuthorizationError` blocks are dead code and can be deleted
-- `CircuitBreaker(timeout_ms=...)` and `CircuitBreaker(cache_priority=...)`, deprecated in 1.2.0; neither had any effect. Passing them now raises `TypeError`. Set the per-call deadline with `TopazConfig(check_timeout=seconds)`
-- `TopazConfig.create_client()`, deprecated in 1.2.0. It opened a new channel per call that the caller had to close, and bypassed the cache and circuit breaker. Use `is_allowed`, `check_relation` or the dependencies. The integration webapp's share endpoint used it without awaiting the async client, so its policy check never ran; it now uses `is_allowed`
-- `ConnectionPool`, `PoolStatus` and `TopazConfig(connection_pool=...)`, deprecated in 1.2.0. They had no effect: authorization checks share one gRPC channel per `TopazConfig`. Delete the argument
 
 ## [1.2.1] - 2026-10-01
 

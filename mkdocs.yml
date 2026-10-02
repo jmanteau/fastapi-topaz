@@ -63,6 +63,7 @@ nav:
           - Authorization: tutorials/example-app/03-authorization.md
           - Sharing Documents: tutorials/example-app/04-sharing-documents.md
   - How-to Guides:
+      - Upgrading to 2.0: how-to/upgrading-to-2.md
       - Choosing an Approach: how-to/choosing-authorization-approach.md
       - Identity Providers: how-to/identity-providers.md
       - Resource Hierarchy: how-to/resource-hierarchy.md
