@@ -974,6 +974,11 @@ class TopazConfig:
         Returns:
             True if allowed, False otherwise
 
+        Raises:
+            Exception: Authorizer errors the circuit breaker does not turn into a
+                fallback decision (no breaker configured, or a non-failure code
+                such as INVALID_ARGUMENT) propagate to the caller.
+
         Example:
             ```python
             @app.get("/documents/{id}")
@@ -1015,6 +1020,11 @@ class TopazConfig:
 
         Returns:
             True if the relation exists, False otherwise
+
+        Raises:
+            Exception: Authorizer errors the circuit breaker does not turn into a
+                fallback decision (no breaker configured, or a non-failure code
+                such as INVALID_ARGUMENT) propagate to the caller.
 
         Example:
             ```python
@@ -1082,6 +1092,11 @@ class TopazConfig:
 
         Returns:
             Dict mapping relation names to boolean results
+
+        Raises:
+            Exception: Authorizer errors the circuit breaker does not turn into a
+                fallback decision (no breaker configured, or a non-failure code
+                such as INVALID_ARGUMENT) propagate to the caller.
 
         Example:
             ```python
@@ -1160,6 +1175,9 @@ class TopazConfig:
 
         Raises:
             ValueError: If ``checks`` is empty or an ID source cannot be resolved.
+            Exception: Authorizer errors the circuit breaker does not turn into a
+                fallback decision (no breaker configured, or a non-failure code
+                such as INVALID_ARGUMENT) propagate to the caller.
 
         Example:
             ```python

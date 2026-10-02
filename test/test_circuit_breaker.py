@@ -447,7 +447,7 @@ class TestGrpcFailureDetection:
     async def test_invalid_argument_does_not_open_breaker(
         self, authorizer_options, identity_provider, monkeypatch
     ):
-        """Policy errors propagate without tripping the breaker."""
+        """Policy errors answer 503 without tripping the breaker."""
         cb = CircuitBreaker(failure_threshold=2, fallback="deny")
         config = TopazConfig(
             authorizer_options=authorizer_options,
@@ -473,8 +473,8 @@ class TestGrpcFailureDetection:
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             for _ in range(3):
-                with pytest.raises(_FakeRpcError):
-                    await client.get("/test")
+                # The dependency answers 503; the error is not a breaker failure
+                assert (await client.get("/test")).status_code == 503
             assert cb.state == CircuitState.CLOSED
 
 

@@ -49,6 +49,31 @@ def iter_routes(app: Any) -> Iterable[Any]:
     return _iter_route_contexts(app.routes)
 
 
+def resolve_route_path(scope: Any) -> str | None:
+    """Return the path template of the route matched for *scope*, prefixes included.
+
+    On FastAPI >= 0.137, ``scope["route"]`` is the included router's original
+    route, whose path lacks the ``include_router()`` prefixes; the prefixed
+    path lives on the effective route context. A router included under
+    several prefixes has one context per prefix, so the context must also
+    match *scope*. Returns ``None`` when no route context can be found.
+    """
+    route = scope.get("route")
+    if route is None:
+        return None
+    if _iter_route_contexts is None:
+        return route.path  # FastAPI < 0.137: app.routes is flat and prefixed
+    app = scope.get("app")
+    if app is None:
+        return None
+    for context in iter_routes(app):
+        if getattr(context, "original_route", context) is not route:
+            continue
+        if context.matches(scope)[0] == Match.FULL:
+            return context.path
+    return None
+
+
 def iter_frontend_paths(app: Any) -> list[str]:
     """Return the mount paths of *app*'s frontend routes (e.g. ``/app``, ``/out/in/ui``).
 

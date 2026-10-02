@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `require_policy_auto` now includes `include_router()` prefixes on FastAPI 0.137+; it previously checked the un-prefixed route path (e.g. `myapp.POST` instead of `myapp.POST.api.folders` for a router included under `/api/folders`). When the route path cannot be resolved it fails with 500 instead of falling back to the un-prefixed path
+- Dependencies (`require_policy_allowed`, `require_policy_auto`, `require_rebac_allowed`, `get_authorized_resource`, `filter_authorized_resources`, `require_rebac_hierarchy`) now return 503 when the authorizer call fails and the circuit breaker gives no fallback decision (for example `INVALID_ARGUMENT` for a missing policy, or any error without a breaker); the error previously escaped as an unhandled 500. With `expose_deny_reason=True` the body names the policy, source and error type
+
 - Policy generation, `policy-diff`, the rights matrix and the `check` CLI command now include frontend routes (one `GET` entry per mount path) and mounts (one entry each for `GET`, `POST`, `PUT`, `PATCH`, `DELETE`), which the middleware already authorizes; previously `policy-diff` reported them in sync while the middleware denied them at runtime
 - `TopazMiddleware` now fails closed with 403 for any breakage in FastAPI's private frontend matching internals, not only a missing matcher; other changes previously produced a 500
 - With a root frontend (`app.frontend("/")`), requests FastAPI answers with a trailing-slash redirect are no longer checked against the frontend policy, so a deny no longer replaces the redirect with a 403
@@ -42,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Codegen no longer excludes the docs routes (`/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc`) by default, since the middleware authorizes them; `scan_routes`, `generate_policies`, `policy_diff` and the rights matrix now list them. Disable them on the app or pass `exclude_paths` to `scan_routes` to leave them out
 - `install_mock` also patches `identity_provider`: tests get `MockTopazConfig.identity_returns` as an `IDENTITY_TYPE_SUB` identity (or an unauthenticated identity for `None`) instead of the config's own provider
 - CLI commands exit with code 2 instead of 1 when the app or config cannot be imported
+- The integration-test webapp runs on current FastAPI again (it was pinned below 0.122), and its image takes a `FASTAPI_SPEC` build argument to test other route layouts
+
+### Deprecated
+
+- The `TopazMiddleware(on_error=...)` default changes from `"deny"` (403) to `"unavailable"` (503) in 2.0, to match the dependencies; pass `on_error="deny"` to keep today's behavior
 
 ## [1.2.1] - 2026-10-01
 

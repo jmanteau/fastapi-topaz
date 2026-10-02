@@ -28,13 +28,15 @@ import asyncio
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, Mock
 
+import grpc
 import pytest
 from aserto.client import AuthorizerOptions, Identity, IdentityType
-from fastapi import Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_topaz import (
+    CircuitBreaker,
     DecisionCache,
     TopazConfig,
     filter_authorized_resources,
@@ -463,6 +465,88 @@ class TestRequirePolicyAuto:
 
         call_kwargs = patch_client.decisions.call_args.kwargs
         assert call_kwargs["policy_path"] == "testapp.GET.aircraft_programs"
+
+
+class TestRequirePolicyAutoIncludedRouters:
+    """
+    require_policy_auto must include include_router() prefixes.
+
+    FastAPI 0.137+ sets scope["route"] to the router's original (un-prefixed)
+    route, so the prefix has to come from the effective route context.
+    """
+
+    @staticmethod
+    def _policy_path(patch_client) -> str:
+        return patch_client.decisions.call_args.kwargs["policy_path"]
+
+    def test_prefixed_router(self, topaz_config, patch_client):
+        router = APIRouter()
+
+        @router.post("")
+        def create(_=Depends(require_policy_auto(topaz_config))):
+            return {}
+
+        @router.get("/{id}")
+        def read(id: int, _=Depends(require_policy_auto(topaz_config))):
+            return {}
+
+        app = FastAPI()
+        app.include_router(router, prefix="/api/folders")
+        client = TestClient(app)
+
+        assert client.post("/api/folders").status_code == 200
+        assert self._policy_path(patch_client) == "testapp.POST.api.folders"
+        assert client.get("/api/folders/7").status_code == 200
+        assert self._policy_path(patch_client) == "testapp.GET.api.folders.__id"
+
+    def test_nested_routers(self, topaz_config, patch_client):
+        inner = APIRouter()
+
+        @inner.get("/{doc_id}")
+        def read(doc_id: int, _=Depends(require_policy_auto(topaz_config))):
+            return {}
+
+        outer = APIRouter()
+        outer.include_router(inner, prefix="/docs")
+        app = FastAPI()
+        app.include_router(outer, prefix="/api")
+
+        assert TestClient(app).get("/api/docs/1").status_code == 200
+        assert self._policy_path(patch_client) == "testapp.GET.api.docs.__doc_id"
+
+    def test_router_included_under_two_prefixes(self, topaz_config, patch_client):
+        router = APIRouter()
+
+        @router.get("/items")
+        def items(_=Depends(require_policy_auto(topaz_config))):
+            return {}
+
+        app = FastAPI()
+        app.include_router(router, prefix="/v1")
+        app.include_router(router, prefix="/v2")
+        client = TestClient(app)
+
+        client.get("/v2/items")
+        assert self._policy_path(patch_client) == "testapp.GET.v2.items"
+        client.get("/v1/items")
+        assert self._policy_path(patch_client) == "testapp.GET.v1.items"
+
+    def test_app_route_next_to_included_router(self, topaz_config, patch_client):
+        router = APIRouter()
+
+        @router.get("/items")
+        def items(_=Depends(require_policy_auto(topaz_config))):
+            return {}
+
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+
+        @app.get("/status")
+        def status(_=Depends(require_policy_auto(topaz_config))):
+            return {}
+
+        assert TestClient(app).get("/status").status_code == 200
+        assert self._policy_path(patch_client) == "testapp.GET.status"
 
 
 class TestRequirePolicyAllowed:
@@ -2033,9 +2117,7 @@ class TestExposeDenyReason:
 
         @app.get(
             "/documents",
-            dependencies=[
-                Depends(require_policy_allowed(verbose_config, "testapp.GET.documents"))
-            ],
+            dependencies=[Depends(require_policy_allowed(verbose_config, "testapp.GET.documents"))],
         )
         def route():
             return {}
@@ -2055,9 +2137,7 @@ class TestExposeDenyReason:
 
         @app.get(
             "/documents/{id}",
-            dependencies=[
-                Depends(require_rebac_allowed(verbose_config, "document", "can_read"))
-            ],
+            dependencies=[Depends(require_rebac_allowed(verbose_config, "document", "can_read"))],
         )
         def route(id: int):
             return {}
@@ -2079,9 +2159,7 @@ class TestExposeDenyReason:
 
         @app.get(
             "/documents",
-            dependencies=[
-                Depends(require_policy_allowed(topaz_config, "testapp.GET.documents"))
-            ],
+            dependencies=[Depends(require_policy_allowed(topaz_config, "testapp.GET.documents"))],
         )
         def route():
             return {}
@@ -2257,3 +2335,117 @@ class TestEmptyStaticObjectIdRejected:
 
     def test_non_empty_static_id_accepted(self, topaz_config):
         require_rebac_allowed(topaz_config, "document", "can_read", object_id="doc-1")
+
+
+class _FakeRpcError(grpc.RpcError):
+    """Mimics grpc.aio.AioRpcError: an RpcError exposing code()."""
+
+    def __init__(self, code):
+        self._code = code
+        super().__init__()
+
+    def code(self):
+        return self._code
+
+
+class TestDependencyAuthorizerErrors:
+    """A failed authorizer call returns 503, never an unhandled 500 or a 403."""
+
+    @pytest.fixture(params=["invalid_argument", "runtime_error"])
+    def failing_client(self, request, monkeypatch):
+        exc = (
+            _FakeRpcError(grpc.StatusCode.INVALID_ARGUMENT)
+            if request.param == "invalid_argument"
+            else RuntimeError("authorizer exploded")
+        )
+        decisions = AsyncMock(side_effect=exc)
+        monkeypatch.setattr(SharedAuthorizerClient, "decisions", decisions)
+        return decisions
+
+    @staticmethod
+    def _app(config) -> FastAPI:
+        app = FastAPI()
+
+        @app.get("/policy", dependencies=[Depends(require_policy_allowed(config, "testapp.GET.x"))])
+        def policy():
+            return {}
+
+        @app.get("/auto", dependencies=[Depends(require_policy_auto(config))])
+        def auto():
+            return {}
+
+        @app.get(
+            "/rebac/{id}", dependencies=[Depends(require_rebac_allowed(config, "doc", "can_read"))]
+        )
+        def rebac(id: int):
+            return {}
+
+        @app.get("/resource/{id}")
+        def resource(
+            id: int,
+            doc=Depends(
+                get_authorized_resource(
+                    config, lambda r: FakeDocument(id=1, name="d", owner="a"), "doc", "can_read"
+                )
+            ),
+        ):
+            return {}
+
+        @app.get("/filter")
+        async def filtered(
+            filter_fn=Depends(filter_authorized_resources(config, "doc", "can_read")),
+        ):
+            return await filter_fn([FakeDocument(id=1, name="d", owner="a")])
+
+        @app.get(
+            "/hierarchy/{org_id}",
+            dependencies=[Depends(require_rebac_hierarchy(config, [("org", "org_id", "member")]))],
+        )
+        def hierarchy(org_id: str):
+            return {}
+
+        return app
+
+    @pytest.mark.parametrize(
+        "path", ["/policy", "/auto", "/rebac/1", "/resource/1", "/filter", "/hierarchy/o1"]
+    )
+    def test_returns_503(self, topaz_config, failing_client, path):
+        response = TestClient(self._app(topaz_config)).get(path)
+        assert response.status_code == 503
+        assert response.json() == {"detail": "Service Unavailable"}
+
+    def test_expose_deny_reason_structured_detail(
+        self, authorizer_options, identity_provider, failing_client
+    ):
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test-policy",
+            expose_deny_reason=True,
+        )
+        response = TestClient(self._app(config)).get("/policy")
+        assert response.status_code == 503
+        detail = response.json()["detail"]
+        assert detail["detail"] == "Service Unavailable"
+        assert detail["policy"] == "testapp.GET.x"
+        assert detail["source"] == "dependency"
+        assert detail["error"] in {"_FakeRpcError", "RuntimeError"}
+
+    def test_breaker_fallback_still_decides(
+        self, authorizer_options, identity_provider, monkeypatch
+    ):
+        """UNAVAILABLE with a fallback is a decision, not a 503."""
+        monkeypatch.setattr(
+            SharedAuthorizerClient,
+            "decisions",
+            AsyncMock(side_effect=_FakeRpcError(grpc.StatusCode.UNAVAILABLE)),
+        )
+        config = TopazConfig(
+            authorizer_options=authorizer_options,
+            policy_path_root="testapp",
+            identity_provider=identity_provider,
+            policy_instance_name="test-policy",
+            circuit_breaker=CircuitBreaker(fallback="allow"),
+        )
+        assert TestClient(self._app(config)).get("/policy").status_code == 200

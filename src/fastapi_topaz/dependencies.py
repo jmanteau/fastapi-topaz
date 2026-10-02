@@ -5,13 +5,14 @@ import functools
 import inspect
 import logging
 from collections.abc import Awaitable
-from typing import Any, Callable, Literal, TypeVar, cast
+from typing import Any, Callable, Literal, NoReturn, TypeVar, cast
 
 from aserto.client import ResourceContext
 from fastapi import HTTPException, Request, status
 from starlette.concurrency import run_in_threadpool
 
 from ._policy import _resolve_policy_path
+from ._routes import resolve_route_path
 from .config import TopazConfig
 
 T = TypeVar("T")
@@ -40,7 +41,10 @@ async def _check_policy_and_raise(
     )
     logger.debug(f"Resource context: {ctx}")
 
-    allowed = await config.check_decision(request, policy_path, decision, ctx)
+    try:
+        allowed = await config.check_decision(request, policy_path, decision, ctx)
+    except Exception as exc:
+        _raise_unavailable(config, policy_path, "dependency", exc)
 
     if not allowed:
         logger.debug(
@@ -55,6 +59,35 @@ async def _check_policy_and_raise(
         )
 
     logger.debug(f"Access GRANTED: path={policy_path}, identity_type={identity.type}")
+
+
+def _raise_unavailable(
+    config: TopazConfig, policy_path: str, source: str, exc: Exception
+) -> NoReturn:
+    """Log a failed authorizer call and raise 503.
+
+    Reached only for errors the circuit breaker did not turn into a fallback
+    decision (no breaker configured, or a non-failure code such as
+    INVALID_ARGUMENT for a missing policy).
+    """
+    logger.error(
+        "Authorization check failed in %s for policy %s",
+        source,
+        policy_path,
+        exc_info=exc,
+    )
+    detail: str | dict = "Service Unavailable"
+    if config.expose_deny_reason:
+        detail = {
+            "detail": "Service Unavailable",
+            "policy": policy_path,
+            "source": source,
+            "error": type(exc).__name__,
+        }
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=detail,
+    ) from exc
 
 
 def _raise_rebac_denied(config: TopazConfig, relation: str, object_type: str, obj_id: str) -> None:
@@ -84,8 +117,7 @@ def _require_object_id(obj_id: str, request: Request, expected_param: str) -> No
     """
     if obj_id:
         return
-    route = request.scope.get("route")
-    route_path = getattr(route, "path", request.url.path)
+    route_path = resolve_route_path(request.scope) or request.url.path
     logger.error(
         "Could not resolve object ID for %s %s: expected %r, available path params: %s",
         request.method,
@@ -116,6 +148,7 @@ def require_policy_allowed(
 ) -> Callable[[Request], Awaitable[None]]:
     """
     Async dependency that raises HTTPException(403) if policy denies access.
+    Raises HTTPException(503) when the authorizer call itself fails.
 
     Args:
         config: Topaz configuration
@@ -149,6 +182,7 @@ def require_policy_auto(
 ) -> Callable[[Request], Awaitable[None]]:
     """
     Async dependency that auto-generates policy path from route and raises HTTPException(403) if denied.
+    Raises HTTPException(503) when the authorizer call itself fails.
 
     The policy path is automatically derived from the HTTP method and route path pattern:
     - GET /documents -> {root}.GET.documents
@@ -177,15 +211,18 @@ def require_policy_auto(
     """
 
     async def dependency(request: Request) -> None:
-        # Extract route path pattern from FastAPI's routing
-        route = request.scope.get("route")
-        if route is None:
+        # Route path pattern with include_router() prefixes; never fall back to
+        # the un-prefixed route path, which would check the wrong policy
+        route_path = resolve_route_path(request.scope)
+        if route_path is None:
+            logger.error(
+                "Could not resolve the route path for %s %s", request.method, request.url.path
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Unable to determine route for policy path auto-resolution",
             )
 
-        route_path = route.path
         method = request.method
 
         # Generate policy path
@@ -210,6 +247,7 @@ def require_rebac_allowed(
 ) -> Callable[[Request], Awaitable[None]]:
     """
     Async dependency that raises HTTPException(403) if ReBAC check fails.
+    Raises HTTPException(503) when the authorizer call itself fails.
 
     Args:
         config: Topaz configuration
@@ -262,7 +300,10 @@ def require_rebac_allowed(
 
         policy_path = f"{config.policy_path_root}.check"
 
-        allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
+        try:
+            allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
+        except Exception as exc:
+            _raise_unavailable(config, policy_path, "rebac", exc)
 
         if not allowed:
             _raise_rebac_denied(config, relation, object_type, obj_id)
@@ -281,6 +322,7 @@ def get_authorized_resource(
     """
     Async dependency that checks authorization, then fetches the resource.
     Returns resource or raises 403/404.
+    Raises HTTPException(503) when the authorizer call itself fails.
 
     Authorization runs first, so a denied request gets 403 whether or not the
     resource exists (no existence oracle) and the fetcher is never called.
@@ -338,7 +380,10 @@ def get_authorized_resource(
 
         policy_path = f"{config.policy_path_root}.check"
 
-        allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
+        try:
+            allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
+        except Exception as exc:
+            _raise_unavailable(config, policy_path, "rebac", exc)
 
         if not allowed:
             _raise_rebac_denied(config, relation, object_type, obj_id)
@@ -371,6 +416,7 @@ def filter_authorized_resources(
 ) -> Callable[[Request], Awaitable[Callable[[list[T]], Awaitable[list[T]]]]]:
     """
     Async dependency that returns an async filter function to remove unauthorized resources.
+    Raises HTTPException(503) when the authorizer call itself fails.
 
     Uses concurrent authorization checks (controlled by config.max_concurrent_checks)
     and caching (if config.decision_cache is set) for optimal performance.
@@ -421,7 +467,12 @@ def filter_authorized_resources(
 
             # Use semaphore to limit concurrent checks
             async with config._get_semaphore():
-                allowed = await config.check_decision(request, policy_path, "allowed", resource_ctx)
+                try:
+                    allowed = await config.check_decision(
+                        request, policy_path, "allowed", resource_ctx
+                    )
+                except Exception as exc:
+                    _raise_unavailable(config, policy_path, "rebac", exc)
 
             return resource, allowed
 
@@ -449,6 +500,7 @@ def require_rebac_hierarchy(
 ) -> Callable[[Request], Awaitable[None]]:
     """
     Async dependency for hierarchical ReBAC authorization.
+    Raises HTTPException(503) when the authorizer call itself fails.
 
     Checks multiple object/relation pairs in a single dependency, reducing
     boilerplate for nested resources like /orgs/{org}/projects/{proj}/docs/{doc}.
@@ -509,6 +561,8 @@ def require_rebac_hierarchy(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Authorization misconfiguration: could not resolve object ID",
             ) from e
+        except Exception as exc:
+            _raise_unavailable(config, f"{config.policy_path_root}.check", "rebac", exc)
 
         if not result.allowed:
             if result.denied_at:

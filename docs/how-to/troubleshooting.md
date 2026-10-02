@@ -457,6 +457,7 @@ To pin a different socket, compose command, or Terraform binary, copy `local.mk.
 | `policy_path must not be empty`     | Empty policy path                     | Check policy_path_root configuration    |
 | `ConnectionPool is closed`          | Pool used after shutdown              | Don't reuse config after app shutdown   |
 | `Semaphore released too many times` | Bug in custom code                    | Check async context managers            |
+| `503 Service Unavailable` from a dependency | Authorizer call failed with no circuit-breaker fallback (e.g. `INVALID_ARGUMENT` for a missing policy) | Check the ERROR log "Authorization check failed in ... for policy ..."; add the policy or configure a `CircuitBreaker` |
 
 ---
 
