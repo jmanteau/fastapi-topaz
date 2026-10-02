@@ -478,23 +478,13 @@ class TestGrpcFailureDetection:
             assert cb.state == CircuitState.CLOSED
 
 
-class TestDeprecatedKnobs:
-    """D5: timeout_ms and cache_priority warn when set to non-default values."""
+class TestRemovedKnobs:
+    """timeout_ms and cache_priority were removed in 2.0; passing them fails loudly."""
 
-    def test_timeout_ms_warns_when_set(self):
-        with pytest.warns(DeprecationWarning, match="timeout_ms"):
-            CircuitBreaker(timeout_ms=1000)
-
-    def test_cache_priority_warns_when_set(self):
-        with pytest.warns(DeprecationWarning, match="cache_priority"):
-            CircuitBreaker(cache_priority=["policy.a"])
-
-    def test_defaults_do_not_warn(self):
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            CircuitBreaker()
+    @pytest.mark.parametrize("knob", [{"timeout_ms": 1000}, {"cache_priority": ["policy.a"]}])
+    def test_removed_knob_raises(self, knob):
+        with pytest.raises(TypeError):
+            CircuitBreaker(**knob)
 
 
 class TestHalfOpenProbeSlots:

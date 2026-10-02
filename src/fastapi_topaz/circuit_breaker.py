@@ -85,12 +85,9 @@ class CircuitBreaker:
                   "deny", "allow", or custom callable)
         serve_stale_cache: Whether to serve expired cache entries when open
         stale_cache_ttl: Maximum age (seconds) of stale cache to serve
-        cache_priority: Deprecated, has no effect; will be removed in 2.0
         failure_exceptions: Exception types that count as failures
         failure_grpc_codes: gRPC status codes that count as failures (default:
             UNAVAILABLE, DEADLINE_EXCEEDED, UNKNOWN, INTERNAL, RESOURCE_EXHAUSTED)
-        timeout_ms: Deprecated, has no effect; use TopazConfig.check_timeout
-            instead. Will be removed in 2.0.
         on_state_change: Callback when circuit state changes
         on_fallback: Callback when fallback is used
         half_open_max_requests: Number of test requests allowed in half-open state
@@ -119,7 +116,6 @@ class CircuitBreaker:
     # Cache integration
     serve_stale_cache: bool = True
     stale_cache_ttl: float = 300.0
-    cache_priority: list[str] | None = None
     no_stale_for: list[str] | None = None
 
     # Failure detection
@@ -135,7 +131,6 @@ class CircuitBreaker:
             grpc.StatusCode.RESOURCE_EXHAUSTED,
         }
     )
-    timeout_ms: int = 5000
 
     # Callbacks
     on_state_change: Callable[[str, str, str], None] | None = None
@@ -155,25 +150,6 @@ class CircuitBreaker:
     # Incremented on every entry into HALF_OPEN; ties probe tickets to one period
     _half_open_epoch: int = field(default=0, init=False, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        import warnings
-
-        # Warn only on non-default values so plain construction stays silent
-        if self.timeout_ms != 5000:
-            warnings.warn(
-                "CircuitBreaker.timeout_ms is deprecated and has no effect; "
-                "use TopazConfig.check_timeout instead. It will be removed in 2.0.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if self.cache_priority is not None:
-            warnings.warn(
-                "CircuitBreaker.cache_priority is deprecated and has no effect; "
-                "it will be removed in 2.0.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
 
     @property
     def state(self) -> CircuitState:
