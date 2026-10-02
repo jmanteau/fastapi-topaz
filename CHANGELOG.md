@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-03
+
 A major release: the APIs deprecated in 1.2 are removed, and several changes need action when upgrading. See [Upgrading to 2.0](https://jmanteau.github.io/fastapi-topaz/how-to/upgrading-to-2/).
 
 ### Added
@@ -254,7 +256,8 @@ A major release: the APIs deprecated in 1.2 are removed, and several changes nee
 - aserto >= 0.32.2
 - Python >= 3.9
 
-[Unreleased]: https://github.com/jmanteau/fastapi-topaz/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/jmanteau/fastapi-topaz/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/jmanteau/fastapi-topaz/compare/v1.2.1...v2.0.0
 [1.2.1]: https://github.com/jmanteau/fastapi-topaz/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/jmanteau/fastapi-topaz/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/jmanteau/fastapi-topaz/compare/v1.0.1...v1.1.0
