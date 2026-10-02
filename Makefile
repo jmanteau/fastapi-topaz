@@ -218,7 +218,7 @@ int-doctor: cmd-exists-openssl cmd-exists-curl cmd-exists-uv ## Check integratio
 	@echo "  DOCKER_HOST: $(if $(DOCKER_HOST),$(DOCKER_HOST),<default>)"
 	@test -n "$(COMPOSE)" || \
 		{ echo "$(YELLOW)Error: no compose command found. Install Docker Compose or Podman, or set COMPOSE in local.mk.$(RESET)"; exit 1; }
-	@cd $(INT_DIR) && $(COMPOSE) ls >/dev/null 2>&1 || \
+	@cd $(INT_DIR) && $(COMPOSE) ps >/dev/null 2>&1 || \
 		{ echo "$(YELLOW)Error: '$(COMPOSE)' cannot reach a container engine. Start Docker or 'podman machine start', or set DOCKER_HOST in local.mk.$(RESET)"; exit 1; }
 	@command -v $(TF) >/dev/null 2>&1 || \
 		{ echo "$(YELLOW)Error: '$(TF)' not found. Install Terraform or OpenTofu, or set TF in local.mk.$(RESET)"; exit 1; }
