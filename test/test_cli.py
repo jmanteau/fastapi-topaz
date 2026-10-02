@@ -56,7 +56,7 @@ class MockArgs:
 # Sample FastAPI app code for dynamic import testing
 TEST_APP_CODE = """
 from fastapi import FastAPI
-app = FastAPI()
+app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
 @app.get("/items")
 def list_items():
@@ -538,3 +538,61 @@ class TestPolicyDiffVerboseOutput:
         assert "cfgapp.stray" in captured.out
         assert "Covered by policy group" in captured.out
         assert "Covered by default policy" in captured.out
+
+
+class TestCliReviewFixes:
+    """CLI regressions: cwd imports, import exit codes, policy-map --config."""
+
+    def test_main_imports_app_from_cwd(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "cwd_app_mod.py").write_text(TEST_APP_CODE)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "path", [p for p in sys.path if p not in ("", str(tmp_path))])
+        monkeypatch.setattr(
+            sys, "argv", ["fastapi-topaz", "policy-map", "--app", "cwd_app_mod:app"]
+        )
+
+        assert main() == 0
+        assert "app.GET.items" in capsys.readouterr().out
+
+    def test_import_app_failure_exits_2(self):
+        with pytest.raises(SystemExit) as exc:
+            import_app("nonexistent.module:app")
+        assert exc.value.code == 2
+
+    def test_import_config_failure_exits_2(self):
+        from fastapi_topaz.cli import import_config
+
+        with pytest.raises(SystemExit) as exc:
+            import_config("nonexistent.module:config")
+        assert exc.value.code == 2
+
+    def test_policy_map_uses_config_normalizer(self, tmp_path, capsys):
+        module_dir = tmp_path / "pmapmod"
+        module_dir.mkdir()
+        (module_dir / "__init__.py").write_text("")
+        (module_dir / "main.py").write_text(
+            "from aserto.client import AuthorizerOptions, Identity, IdentityType\n"
+            "from fastapi import FastAPI\n"
+            "from fastapi_topaz import TopazConfig, normalize_hyphens\n"
+            "app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)\n"
+            "@app.get('/aircraft-programs')\n"
+            "def programs():\n"
+            "    return []\n"
+            "config = TopazConfig(\n"
+            "    authorizer_options=AuthorizerOptions(url='localhost:8282'),\n"
+            "    policy_path_root='cfg',\n"
+            "    identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_NONE, value=''),\n"
+            "    policy_instance_name='cfg',\n"
+            "    policy_path_normalizer=normalize_hyphens,\n"
+            ")\n"
+        )
+        sys.path.insert(0, str(tmp_path))
+        try:
+            args = MockArgs(app="pmapmod.main:app", config="pmapmod.main:config")
+            assert cmd_policy_map(args) == 0
+        finally:
+            sys.path.remove(str(tmp_path))
+
+        out = capsys.readouterr().out
+        assert "cfg.GET.aircraft_programs" in out
+        assert "cfg.GET.aircraft-programs" not in out

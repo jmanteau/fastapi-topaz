@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -18,14 +19,14 @@ def import_app(app_path: str):
         module_path, attr_name = app_path.rsplit(":", 1)
     except ValueError:
         print(f"Error: Invalid app path '{app_path}'. Use format 'module.path:app'")
-        sys.exit(1)
+        sys.exit(2)
 
     try:
         module = importlib.import_module(module_path)
         return getattr(module, attr_name)
     except (ImportError, AttributeError) as e:
         print(f"Error importing app: {e}")
-        sys.exit(1)
+        sys.exit(2)
 
 
 def import_config(config_path: str):
@@ -36,7 +37,7 @@ def import_config(config_path: str):
         return getattr(module, attr_name)
     except Exception as e:
         print(f"Error importing config: {e}")
-        sys.exit(1)
+        sys.exit(2)
 
 
 def cmd_generate_policies(args: argparse.Namespace) -> int:
@@ -202,8 +203,14 @@ def cmd_policy_map(args: argparse.Namespace) -> int:
     from .codegen import scan_routes
 
     app = import_app(args.app)
-    root = args.root or "app"
-    routes = scan_routes(app, root)
+    normalizer = None
+    if args.config:
+        config = import_config(args.config)
+        root = config.policy_path_root
+        normalizer = config.policy_path_normalizer
+    else:
+        root = args.root or "app"
+    routes = scan_routes(app, root, policy_path_normalizer=normalizer)
 
     if args.format == "markdown":
         print("| Route | Method | Policy Path | Auth Type |")
@@ -367,11 +374,18 @@ def main() -> int:
     # policy-map
     pmap = subparsers.add_parser("policy-map", help="Generate route-to-policy mapping")
     pmap.add_argument("--app", required=True, help="FastAPI app (module:attribute)")
+    pmap.add_argument("--config", help="TopazConfig (module:attribute)")
     pmap.add_argument("--root", help="Policy path root (default: app)")
     pmap.add_argument("--format", choices=["text", "markdown"], default="text")
     pmap.set_defaults(func=cmd_policy_map)
 
     args = parser.parse_args()
+
+    # The console script does not put the working directory on sys.path, so
+    # "--app myapp:app" would not find ./myapp.py without this
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
 
     if not args.command:
         parser.print_help()
