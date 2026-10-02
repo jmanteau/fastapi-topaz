@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 import fastapi
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -15,7 +15,12 @@ from app.database import get_db
 from app.models import User
 from app.routers import documents, folders, shares
 from app.topaz_integration import POLICIES_DIR, topaz_config
-from fastapi_topaz import TopazMiddleware, annotate_openapi, skip_middleware
+from fastapi_topaz import (
+    TopazMiddleware,
+    annotate_openapi,
+    require_policy_allowed,
+    skip_middleware,
+)
 
 
 @asynccontextmanager
@@ -141,6 +146,16 @@ async def list_users(request: Request):
     db = next(get_db())
     users = db.query(User).filter(User.id != current_user.id).all()
     return [{"id": u.id, "name": u.name, "email": u.email} for u in users]
+
+
+# Test fixture for e2e: the middleware allows any authenticated user (default_policy),
+# then the dependency asks Topaz for a policy that does not exist. Topaz answers
+# INVALID_ARGUMENT, which the dependency turns into 503.
+@app.get("/api/_test/missing-policy")
+async def missing_policy(
+    _: None = Depends(require_policy_allowed(topaz_config, "webapp.test.missing_policy")),
+):
+    return {"status": "unreachable"}
 
 
 # x-authz-policy / x-authz-source in /openapi.json; must run after every route is

@@ -7,6 +7,8 @@ Integration Test: fastapi-topaz 1.2.x features against real Topaz and Authentik
 4. check_relations(batch=True) matches per-relation checks
 5. expose_deny_reason names the evaluated policy in 403 bodies
 6. TopazConfig.health(ping=True) reports a reachable authorizer
+7. Dependencies answer 503 when the authorizer call fails
+8. Routes the middleware skips are marked skipped in /openapi.json
 """
 
 from __future__ import annotations
@@ -112,3 +114,26 @@ def test_health_reports_reachable_authorizer(health):
     assert topaz["healthy"] is True
     assert topaz["ping"] == {"ok": True, "error": None}
     assert topaz["circuit_breaker"]["state"] == "closed"
+
+
+def test_dependency_returns_503_when_policy_missing(anon, alice_client: AuthenticatedClient):
+    """An authorizer error in a dependency is a 503, not an unhandled 500 or a 403."""
+    # The middleware still rejects anonymous callers first
+    assert anon.get("/api/_test/missing-policy").status_code == 401
+
+    response = alice_client.get("/api/_test/missing-policy")
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "detail": "Service Unavailable",
+        "policy": "webapp.test.missing_policy",
+        "source": "dependency",
+        "error": "AioRpcError",
+    }
+
+
+@pytest.mark.parametrize("path", ["/", "/health", "/login"])
+def test_openapi_marks_skipped_routes(openapi, path):
+    """Routes TopazMiddleware never checks claim no policy in /openapi.json."""
+    operation = openapi["paths"][path]["get"]
+    assert operation["x-authz-source"] == "skipped"
+    assert "x-authz-policy" not in operation
