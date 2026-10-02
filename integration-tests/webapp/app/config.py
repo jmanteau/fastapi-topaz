@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     topaz_policy_root: str = "webapp"
     topaz_policy_instance_name: str = "webapp"
     topaz_policy_instance_label: str = "webapp"
+    # Structured 403/503 bodies naming the policy; dev/test only
+    topaz_expose_deny_reason: bool = False
 
     # Mock Location API
     location_api_url: str = "http://localhost:8001"

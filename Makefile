@@ -12,7 +12,8 @@
 .PHONY: int-shell int-topaz-shell int-topaz-reload int-auth-password int-certs
 .PHONY: int-tf-init int-tf-plan int-tf-apply int-tf-destroy
 .PHONY: int-lint int-lint-fix
-.PHONY: e2e e2e-fast e2e-alice e2e-bob e2e-cookies e2e-clean _require-infra
+.PHONY: e2e e2e-fast e2e-alice e2e-bob e2e-cookies e2e-clean e2e-v12 e2e-matrix _require-infra
+.PHONY: int-policy-diff
 
 # Colors
 RESET := \033[0m
@@ -407,8 +408,35 @@ _require-infra: _require-hosts
 e2e-init: ## Init e2e tests
 	cd $(E2E_DIR) && uv sync
 
-e2e: _require-infra ## Run all e2e tests
+e2e: _require-infra int-policy-diff ## Run all e2e tests
 	cd $(E2E_DIR) && uv run python run_tests.py
+
+e2e-v12: _require-infra ## Run 1.2.x feature tests (frontend, mounts, OpenAPI, batch, health)
+	cd $(E2E_DIR) && uv run python run_tests.py v12
+
+# FastAPI 0.137 replaced the flat app.routes list with a tree of included routers;
+# run the suite on both layouts, then rebuild the webapp on latest
+e2e-matrix: _require-infra ## Run e2e on latest FastAPI and on <0.137
+	@status=0; \
+	for spec in "" "<0.137"; do \
+		echo "$(BLUE)== FastAPI $${spec:-latest}$(RESET)"; \
+		FASTAPI_SPEC="$$spec" $(MAKE) --no-print-directory int-restart-webapp >/dev/null || { status=1; break; }; \
+		for i in $$(seq 1 30); do curl -sf http://localhost:8000/health >/dev/null && break; sleep 2; done; \
+		curl -s http://localhost:8000/health | python3 -c 'import json,sys; print("   webapp FastAPI", json.load(sys.stdin)["fastapi"])'; \
+		$(MAKE) --no-print-directory e2e || { status=1; break; }; \
+	done; \
+	if [ -n "$$spec" ]; then \
+		echo "$(BLUE)Rebuilding webapp on latest FastAPI$(RESET)"; \
+		FASTAPI_SPEC= $(MAKE) --no-print-directory int-restart-webapp >/dev/null; \
+	fi; \
+	exit $$status
+
+int-policy-diff: ## Check webapp routes against integration policies (frontends and mounts included)
+	@cd $(INT_DIR) && out=$$($(COMPOSE) exec -T webapp uv run fastapi-topaz policy-diff \
+		--app app.main:app --config app.topaz_integration:topaz_config --policies /infra/policies 2>&1); \
+	status=$$?; \
+	printf '%s\n' "$$out" | grep -v -e '^INFO' -e 'DeprecationWarning' -e '_compat import'; \
+	exit $$status
 
 e2e-fast: _require-infra ## Run e2e tests with cached cookies
 	cd $(E2E_DIR) && uv run python run_tests.py

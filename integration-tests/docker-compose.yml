@@ -179,6 +179,8 @@ services:
       TOPAZ_POLICY_ROOT: webapp
       TOPAZ_POLICY_INSTANCE_NAME: webapp
       TOPAZ_POLICY_INSTANCE_LABEL: webapp
+      # Test stack only: 403/503 bodies name the evaluated policy for e2e assertions
+      TOPAZ_EXPOSE_DENY_REASON: "true"
       LOCATION_API_URL: http://mock-location-api:8001
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production-secret-key}
       DEBUG: ${DEBUG:-false}
@@ -194,6 +196,8 @@ services:
     volumes:
       - ../:/fastapi-topaz:ro
       - ./infra/certs:/certs:ro
+      # TopazMiddleware policies_dir (POLICIES_DIR in app/topaz_integration.py)
+      - ./infra/policies:/infra/policies:ro
     networks:
       - internal
 

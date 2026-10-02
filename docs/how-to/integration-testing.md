@@ -52,6 +52,27 @@ sequenceDiagram
 | sharing | 9 | Document sharing with read/write permissions |
 | auth-failures | 9 | Unauthorized access denials |
 | public | 8 | Public document accessibility |
+| v12 | 9 | Frontend routes, authorized mounts, OpenAPI annotations, batch `check_relations`, deny reasons, `health()` |
+
+## Testing Across FastAPI Versions
+
+FastAPI 0.137 replaced the flat `app.routes` list with a tree of included routers, so the library has two route layouts to support. From the repository root:
+
+```bash
+make e2e               # Policy sync check, then the full suite on the current webapp
+make e2e-v12           # 1.2.x feature scenarios only
+make e2e-matrix        # Full suite on latest FastAPI, then on <0.137, then rebuild on latest
+make int-policy-diff   # Webapp routes (frontends and mounts included) vs. infra/policies
+```
+
+The webapp image installs the newest FastAPI the library allows. To build it on another version, set `FASTAPI_SPEC`:
+
+```bash
+FASTAPI_SPEC='<0.137' make int-restart-webapp
+curl -s localhost:8000/health   # "fastapi" reports the running version
+```
+
+On FastAPI without `app.frontend()`, the frontend scenario is skipped.
 
 ## Commands
 

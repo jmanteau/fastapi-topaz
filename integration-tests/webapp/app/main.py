@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+import fastapi
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +15,7 @@ from app.database import get_db
 from app.models import User
 from app.routers import documents, folders, shares
 from app.topaz_integration import POLICIES_DIR, topaz_config
-from fastapi_topaz import TopazMiddleware, skip_middleware
+from fastapi_topaz import TopazMiddleware, annotate_openapi, skip_middleware
 
 
 @asynccontextmanager
@@ -50,6 +51,17 @@ app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
 # Static files and templates
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+
+# Mounts authorized by TopazMiddleware (not in exclude_paths): webapp.GET.files
+# allows any authenticated user, webapp.GET.restricted denies everyone
+app.mount("/files", StaticFiles(directory="app/files"), name="files")
+app.mount("/restricted", StaticFiles(directory="app/restricted"), name="restricted")
+
+# Frontend route (FastAPI 0.137+), authorized with the prefix-only path webapp.GET.app,
+# which has no .rego file and falls back to default_policy
+FRONTEND_ENABLED = hasattr(app, "frontend")
+if FRONTEND_ENABLED:
+    app.frontend("/app", directory="app/frontend")
 
 # Include routers
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
@@ -109,8 +121,13 @@ async def logout(request: Request):
 @app.get("/health")
 @skip_middleware
 async def health():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    """Health check endpoint, with versions and Topaz readiness for e2e."""
+    return {
+        "status": "healthy",
+        "fastapi": fastapi.__version__,
+        "frontend": FRONTEND_ENABLED,
+        "topaz": await topaz_config.health(ping=True),
+    }
 
 
 @app.get("/api/users")
@@ -124,3 +141,8 @@ async def list_users(request: Request):
     db = next(get_db())
     users = db.query(User).filter(User.id != current_user.id).all()
     return [{"id": u.id, "name": u.name, "email": u.email} for u in users]
+
+
+# x-authz-policy / x-authz-source in /openapi.json; must run after every route is
+# registered, including routes added to routers already passed to include_router()
+annotate_openapi(app, topaz_config, policies_dir=POLICIES_DIR)

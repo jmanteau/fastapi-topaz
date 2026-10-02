@@ -157,6 +157,7 @@ topaz_config = TopazConfig(
             policy_path="webapp.defaults.authenticated",
         ),
     ],
+    expose_deny_reason=settings.topaz_expose_deny_reason,
     decision_cache=DecisionCache(ttl_seconds=60, max_size=1000),
     circuit_breaker=CircuitBreaker(
         failure_threshold=5,

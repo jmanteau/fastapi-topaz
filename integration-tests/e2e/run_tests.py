@@ -74,6 +74,7 @@ def main():
         print("  sharing          Document sharing scenarios")
         print("  auth-failures    Authorization failure tests (security)")
         print("  public           Public document scenarios")
+        print("  v12              1.2.x features (frontend, mounts, OpenAPI, batch, health)")
         print("\nOptions:")
         print("  --get-cookies    Get session cookies using HTTP auth")
         print("  --debug          Enable debug output (shows HTTP flow)")
@@ -109,6 +110,7 @@ def main():
             "auth-failures": "tests/test_scenario_authorization_failures.py",
             "failures": "tests/test_scenario_authorization_failures.py",
             "public": "tests/test_scenario_public_documents.py",
+            "v12": "tests/test_scenario_v12_features.py",
         }
 
         if scenario in test_files:
