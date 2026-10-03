@@ -23,6 +23,13 @@ RUN sed -i 's|path = "../.."|path = "/fastapi-topaz"|' pyproject.toml
 # Install all dependencies including fastapi-topaz
 RUN uv sync --no-dev
 
+# Optional FastAPI override for testing other route layouts (e.g. FASTAPI_SPEC="<0.137")
+ARG FASTAPI_SPEC=""
+RUN if [ -n "$FASTAPI_SPEC" ]; then uv pip install "fastapi$FASTAPI_SPEC"; fi
+
+# Keep `uv run` from re-syncing and undoing the override
+ENV UV_NO_SYNC=1
+
 # Remove library source (will be mounted at runtime for dev)
 RUN rm -rf /fastapi-topaz
 

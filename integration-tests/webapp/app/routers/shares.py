@@ -46,40 +46,30 @@ async def create_share(
     if document.owner_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the owner can share this document")
 
-    # Optional: Topaz authorization check (if Topaz is available)
+    # Topaz check of the can_share relation; the document fields go in the
+    # resource context because the document ID is in the body, not the path
     try:
-        client = topaz_config.create_client(request)
-
-        # Get resource context from provider (includes user info, location)
-        from app.topaz_integration import resource_context_provider
-        resource_ctx = resource_context_provider(request)
-
-        # Add document data for policy evaluation
-        resource_ctx.update({
-            "owner_id": document.owner_id,
-            "is_public": document.is_public,
-            "shares": [{"user_id": s.user_id, "permission": s.permission} for s in document.shares],
-            "object_type": "document",
-            "object_id": str(data.document_id),
-            "relation": "can_share",
-            "subject_type": "user",
-        })
-
-        decisions = client.decisions(
-            policy_path=f"{topaz_config.policy_path_root}.check",
-            decisions=("allowed",),
-            policy_instance_name=topaz_config.policy_instance_name,
-            policy_instance_label=topaz_config.policy_instance_label,
-            resource_context=resource_ctx,
+        allowed = await topaz_config.is_allowed(
+            request,
+            f"{topaz_config.policy_path_root}.check",
+            resource_context={
+                "owner_id": document.owner_id,
+                "is_public": document.is_public,
+                "shares": [{"user_id": s.user_id, "permission": s.permission} for s in document.shares],
+                "object_type": "document",
+                "object_id": str(data.document_id),
+                "relation": "can_share",
+                "subject_type": "user",
+            },
         )
-        if not decisions.get("allowed", False):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied by policy")
-    except HTTPException:
-        raise
     except Exception as e:
-        # If Topaz is unavailable, fall back to ownership check (already done above)
+        # If Topaz is unavailable, fall back to the ownership check above
         import logging
+
         logging.warning(f"Topaz authorization check failed, using ownership fallback: {e}")
+    else:
+        if not allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied by policy")
 
     # Verify target user exists
     target_user = db.query(User).filter(User.id == data.user_id).first()

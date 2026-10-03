@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from aserto.client import AuthorizerOptions, Identity, IdentityType, ResourceContext
-from aserto.client.authorizer.aio import AuthorizerClient
 from fastapi import Request
 
 from ._client import SharedAuthorizerClient
@@ -19,11 +19,13 @@ from .cache import make_decision_key
 if TYPE_CHECKING:
     from .audit import AuditLogger
     from .cache import CacheBackend
-    from .circuit_breaker import CircuitBreaker
-    from .connection_pool import ConnectionPool
+    from .circuit_breaker import Admission, CircuitBreaker
     from .observability import OTelTracing, PrometheusMetrics
 
 logger = logging.getLogger("fastapi_topaz")
+
+# Response to a failed authorization call: 403 Forbidden or 503 Service Unavailable
+OnError = Literal["deny", "unavailable"]
 
 
 def _resolve_id_source(id_source: str | Callable[[Request], str], request: Request) -> str:
@@ -171,9 +173,18 @@ class TopazConfig:
         max_concurrent_checks: Max concurrent authorization checks for bulk operations (default: 10)
         check_timeout: gRPC deadline in seconds applied to each authorization
             call (default: 5.0). Set to None to disable the deadline.
+        on_error: Response when the authorization call itself fails and the
+            circuit breaker gives no fallback decision, for the middleware and
+            every dependency. Both values fail closed:
+
+            - ``"deny"`` (default): 403 Forbidden, the same as a denial.
+            - ``"unavailable"``: 503 Service Unavailable, with ``Retry-After``
+              set to the circuit breaker's ``recovery_timeout`` when one is
+              configured. Clients and monitoring can tell an outage from a
+              denial, but proxies and HTTP clients may retry 503s.
+
+            ``TopazMiddleware(on_error=...)`` overrides it for the middleware.
         circuit_breaker: Optional circuit breaker for graceful degradation
-        connection_pool: Deprecated, has no effect on authorization calls
-            (authorization checks use a single shared gRPC channel)
         audit_logger: Optional audit logger for authorization decisions
         metrics: Optional Prometheus metrics collector. When combined with
             circuit_breaker and no user-provided on_state_change callback,
@@ -202,8 +213,8 @@ class TopazConfig:
         decision_cache: CacheBackend | None = None,
         max_concurrent_checks: int = 10,
         check_timeout: float | None = 5.0,
+        on_error: OnError = "deny",
         circuit_breaker: CircuitBreaker | None = None,
-        connection_pool: ConnectionPool | None = None,
         audit_logger: AuditLogger | None = None,
         metrics: PrometheusMetrics | None = None,
         tracing: OTelTracing | None = None,
@@ -224,8 +235,8 @@ class TopazConfig:
             raise ValueError(f"max_concurrent_checks must be >= 1, got {max_concurrent_checks}")
         self.max_concurrent_checks = max_concurrent_checks
         self.check_timeout = check_timeout
+        self.on_error = on_error  # validated by the property setter
         self.circuit_breaker = circuit_breaker
-        self.connection_pool = connection_pool
         self.audit_logger = audit_logger
         self.metrics = metrics
         self.tracing = tracing
@@ -241,8 +252,6 @@ class TopazConfig:
         self._stale_cache_lock: asyncio.Lock | None = None
 
         # Configure connection pool with authorizer options
-        if self.connection_pool:
-            self.connection_pool.configure(authorizer_options)
 
         # Auto-wire circuit breaker metrics: record transitions and the state
         # gauge unless the user installed their own on_state_change callback
@@ -269,6 +278,43 @@ class TopazConfig:
 
             _compile_policy_groups(groups)  # raises ValueError on bad regex
         self._policy_groups = groups
+
+    @property
+    def on_error(self) -> OnError:
+        """Response mode for failed authorization calls, validated on every assignment."""
+        return self._on_error
+
+    @on_error.setter
+    def on_error(self, value: OnError) -> None:
+        if value not in ("deny", "unavailable"):
+            raise ValueError(f"on_error must be 'deny' or 'unavailable', got {value!r}")
+        self._on_error: OnError = value
+
+    def _authz_error_response(
+        self,
+        policy_path: str,
+        source: str,
+        exc: BaseException,
+        on_error: OnError | None = None,
+    ) -> tuple[int, dict[str, Any], dict[str, str]]:
+        """Status, body and headers for an authorization call that failed.
+
+        Shared by the middleware and the dependencies so both answer alike.
+        *on_error* overrides :attr:`on_error` (the middleware's own setting).
+        The body is ``{"detail": ...}``, plus ``policy``, ``source`` and
+        ``error`` when :attr:`expose_deny_reason` is on.
+        """
+        headers: dict[str, str] = {}
+        if (on_error or self.on_error) == "unavailable":
+            status, message = 503, "Authorization service unavailable"
+            if self.circuit_breaker is not None:
+                headers["Retry-After"] = str(math.ceil(self.circuit_breaker.recovery_timeout))
+        else:
+            status, message = 403, "Forbidden"
+        body: dict[str, Any] = {"detail": message}
+        if self.expose_deny_reason:
+            body.update({"policy": policy_path, "source": source, "error": type(exc).__name__})
+        return status, body, headers
 
     @property
     def default_policy(self) -> str | None:
@@ -319,17 +365,6 @@ class TopazConfig:
             "identity_type": _identity_type_name(identity),
             "policy_instance": f"{self.policy_instance_name}/{self.policy_instance_label}",
         }
-
-    def create_client(self, request: Request) -> AuthorizerClient:
-        """Create a Topaz authorizer client with identity from request.
-
-        .. deprecated::
-            No longer used internally — authorization checks go through a
-            single shared gRPC channel. Each call to this method opens a new
-            channel that the caller must close. Will be removed in 2.0.
-        """
-        identity = self.identity_provider(request)
-        return AuthorizerClient(identity=identity, options=self.authorizer_options)
 
     def _make_stale_cache_key(
         self,
@@ -548,8 +583,13 @@ class TopazConfig:
         policy_path: str,
         decisions: tuple[str, ...],
         resource_context: ResourceContext | None,
+        admission: Admission | None = None,
     ) -> dict[str, bool]:
-        """Call Topaz and report the outcome to the circuit breaker."""
+        """Call Topaz and report the outcome to the circuit breaker.
+
+        *admission* is the breaker's ticket for this call, so a result is only
+        counted as a half-open probe when the call was admitted as one.
+        """
         try:
             results = await self._authorizer.decisions(
                 identity=identity,
@@ -563,12 +603,12 @@ class TopazConfig:
         except BaseException as e:
             if self.circuit_breaker:
                 if isinstance(e, Exception) and self.circuit_breaker.is_failure_exception(e):
-                    await self.circuit_breaker.record_failure(e)
+                    await self.circuit_breaker.record_failure(e, admission)
                 else:
-                    self.circuit_breaker.release_probe()
+                    self.circuit_breaker.release_probe(admission)
             raise
         if self.circuit_breaker:
-            await self.circuit_breaker.record_success()
+            await self.circuit_breaker.record_success(admission)
         return results
 
     async def _check_decisions_batch(
@@ -614,8 +654,10 @@ class TopazConfig:
 
         if misses:
             should_call = True
+            admission: Admission | None = None
             if self.circuit_breaker:
-                should_call = await self.circuit_breaker.should_allow_request()
+                admission = await self.circuit_breaker.admit()
+                should_call = admission is not None
 
             if not should_call:
                 # Circuit open: per-decision fallback
@@ -643,7 +685,7 @@ class TopazConfig:
                 try:
                     topaz_start = time.monotonic()
                     wire_results = await self._call_authorizer(
-                        identity, policy_path, tuple(misses), resource_context
+                        identity, policy_path, tuple(misses), resource_context, admission
                     )
                     if self.metrics:
                         self.metrics.record_topaz_latency(time.monotonic() - topaz_start)
@@ -773,9 +815,10 @@ class TopazConfig:
                         self.metrics.record_cache_miss(source)
 
             # Check circuit breaker - should we attempt the call?
+            admission: Admission | None = None
             if self.circuit_breaker:
-                should_call = await self.circuit_breaker.should_allow_request()
-                if not should_call:
+                admission = await self.circuit_breaker.admit()
+                if admission is None:
                     # Circuit is open, use fallback
                     stale_cached = await self._get_stale_cached(
                         identity_value, policy_path, decision, resource_context, **scope
@@ -814,7 +857,7 @@ class TopazConfig:
             topaz_start = time.monotonic()
             try:
                 decisions_result = await self._call_authorizer(
-                    identity, policy_path, (decision,), resource_context
+                    identity, policy_path, (decision,), resource_context, admission
                 )
             except Exception as e:
                 # Check if this is a failure that should trip the circuit breaker
@@ -974,6 +1017,11 @@ class TopazConfig:
         Returns:
             True if allowed, False otherwise
 
+        Raises:
+            Exception: Authorizer errors the circuit breaker does not turn into a
+                fallback decision (no breaker configured, or a non-failure code
+                such as INVALID_ARGUMENT) propagate to the caller.
+
         Example:
             ```python
             @app.get("/documents/{id}")
@@ -1015,6 +1063,11 @@ class TopazConfig:
 
         Returns:
             True if the relation exists, False otherwise
+
+        Raises:
+            Exception: Authorizer errors the circuit breaker does not turn into a
+                fallback decision (no breaker configured, or a non-failure code
+                such as INVALID_ARGUMENT) propagate to the caller.
 
         Example:
             ```python
@@ -1082,6 +1135,11 @@ class TopazConfig:
 
         Returns:
             Dict mapping relation names to boolean results
+
+        Raises:
+            Exception: Authorizer errors the circuit breaker does not turn into a
+                fallback decision (no breaker configured, or a non-failure code
+                such as INVALID_ARGUMENT) propagate to the caller.
 
         Example:
             ```python
@@ -1160,6 +1218,9 @@ class TopazConfig:
 
         Raises:
             ValueError: If ``checks`` is empty or an ID source cannot be resolved.
+            Exception: Authorizer errors the circuit breaker does not turn into a
+                fallback decision (no breaker configured, or a non-failure code
+                such as INVALID_ARGUMENT) propagate to the caller.
 
         Example:
             ```python
@@ -1259,8 +1320,6 @@ class TopazConfig:
     async def close(self) -> None:
         """Shut down TopazConfig and release resources."""
         await self._authorizer.close()
-        if self.connection_pool:
-            await self.connection_pool.close()
         if self.decision_cache:
             await self.decision_cache.clear()
 

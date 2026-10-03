@@ -220,6 +220,18 @@ When the methods of one route resolve differently (for example a policy group th
 "x-authz-source": {"GET": "group", "POST": "generated"}
 ```
 
+### Routes the Middleware Skips
+
+`annotate_openapi()`, the rights matrix, `policy-diff` and `check` report routes that `TopazMiddleware` never authorizes as `skipped`, rather than claiming a policy guards them:
+
+- endpoints decorated with `@skip_middleware`;
+- routes or routers with `Depends(SkipMiddleware)`;
+- routes matching the installed middleware's `exclude_paths`, or using one of its `exclude_methods`. These are read from `app.add_middleware(TopazMiddleware, ...)`.
+
+In OpenAPI a skipped operation has `x-authz-source: skipped` and no `x-authz-policy`. `policy-diff` lists skipped routes in their own section, so they are neither missing nor covered.
+
+`exclude_paths` patterns are matched against route templates such as `/documents/{id}`, not concrete URLs. A pattern written for concrete URLs, such as `^/documents/\d+$`, doesn't match the template, so that route is still reported as authorized. That errs on the cautious side.
+
 On FastAPI 0.137 and later, run `annotate_openapi()` after all routes are registered, including routes added to a router after it was passed to `include_router()`: FastAPI rebuilds that router's route contexts and the annotations on them are lost.
 
 ## See Also

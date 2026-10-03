@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +25,10 @@ class Settings(BaseSettings):
     topaz_policy_root: str = "webapp"
     topaz_policy_instance_name: str = "webapp"
     topaz_policy_instance_label: str = "webapp"
+    # Structured 403/503 bodies naming the policy; dev/test only
+    topaz_expose_deny_reason: bool = False
+    # Failed authorization calls: "deny" (403) or "unavailable" (503)
+    topaz_on_error: Literal["deny", "unavailable"] = "deny"
 
     # Mock Location API
     location_api_url: str = "http://localhost:8001"

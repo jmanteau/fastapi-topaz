@@ -36,3 +36,16 @@ jobs:
           echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
       - name: Run lint, typecheck, and tests
         run: make ci
+
+  # Same strict build as the deploy workflow, which only runs on main
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --extra docs
+      - name: Build documentation
+        run: uv run mkdocs build --strict

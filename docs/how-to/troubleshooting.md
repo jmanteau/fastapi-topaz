@@ -263,11 +263,10 @@ config.policy_path_for("GET", "/aircraft-programs")
    DecisionCache(ttl_seconds=60)
    ```
 
-3. **Disable cache for specific checks:**
+3. **Bypass the cache for specific checks:** use a second `TopazConfig` without `decision_cache` for those calls:
    ```python
-   # Bypass cache by checking directly
-   client = config.create_client(request)
-   result = await client.decisions(...)
+   uncached = TopazConfig(..., decision_cache=None)
+   allowed = await uncached.is_allowed(request, "myapp.GET.documents")
    ```
 
 ### Cache Not Working
@@ -411,14 +410,52 @@ circuit_breaker=CircuitBreaker(
 
 ---
 
+## Integration Environment
+
+Start with `make int-doctor`. It prints what the Makefile detected and fails with a fix-it message for each missing prerequisite.
+
+### Every Authenticated Call Returns 401
+
+**Cause:** The webapp container started without OIDC credentials. Compose reads `env_file` (`integration-tests/.env.oidc`) only when it creates a container. `docker-compose restart` keeps the old environment.
+
+**Solution:** `make int-tf-apply` recreates the webapp for you. If you ran Terraform or compose by hand, recreate it:
+
+```bash
+cd integration-tests && docker-compose up -d --force-recreate webapp
+```
+
+### Login Redirect Fails / Cannot Resolve `authentik-server`
+
+**Cause:** The OIDC issuer is `http://authentik-server:9000`. The e2e client and your browser follow redirects to that name from the host.
+
+**Solution:**
+
+```bash
+echo "127.0.0.1 authentik-server" | sudo tee -a /etc/hosts
+```
+
+### Podman: "Cannot connect to the Docker daemon"
+
+**Cause:** `docker-compose` is looking for `/var/run/docker.sock`.
+
+**Solution:** The Makefile sets `DOCKER_HOST` to the Podman machine socket when `DOCKER_HOST` is unset. Check that the machine is running (`podman machine start`). For compose commands run outside `make`, export it yourself:
+
+```bash
+export DOCKER_HOST="unix://$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}')"
+```
+
+To pin a different socket, compose command, or Terraform binary, copy `local.mk.example` to `local.mk`.
+
+---
+
 ## Common Error Messages
 
 | Error                               | Cause                                 | Solution                                |
 | ----------------------------------- | ------------------------------------- | --------------------------------------- |
 | `Identity has no value`             | identity_provider returned None/empty | Check header extraction, authentication |
 | `policy_path must not be empty`     | Empty policy path                     | Check policy_path_root configuration    |
-| `ConnectionPool is closed`          | Pool used after shutdown              | Don't reuse config after app shutdown   |
 | `Semaphore released too many times` | Bug in custom code                    | Check async context managers            |
+| Unexpected 403, or 503 `Authorization service unavailable` | Authorizer call failed with no circuit-breaker fallback (e.g. `INVALID_ARGUMENT` for a missing policy); the status follows [`on_error`](middleware.md#when-the-authorizer-fails-on_error) | Check the ERROR log "Authorization check failed in ... for policy ..."; add the policy or configure a `CircuitBreaker` |
 
 ---
 

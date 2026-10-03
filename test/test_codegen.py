@@ -10,6 +10,7 @@ Test organization:
 - TestGeneratePolicies: Rego policy file generation
 - TestPolicyDiff: Comparing routes against existing policies
 - TestFrontendAndMountRoutes: Frontend routes and mounts in scans and diffs
+- TestSkippedRoutes: Routes TopazMiddleware skips are reported as skipped
 """
 
 from __future__ import annotations
@@ -19,9 +20,16 @@ from pathlib import Path
 
 import pytest
 from aserto.client import AuthorizerOptions, Identity, IdentityType
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 
-from fastapi_topaz import PolicyGroup, TopazConfig, normalize_hyphens
+from fastapi_topaz import (
+    PolicyGroup,
+    SkipMiddleware,
+    TopazConfig,
+    TopazMiddleware,
+    normalize_hyphens,
+    skip_middleware,
+)
 from fastapi_topaz._routes import FrontendMatchError, iter_frontend_paths
 from fastapi_topaz.codegen import (
     PolicyTemplate,
@@ -746,3 +754,133 @@ class TestAnnotateOpenapiPerMethod:
         op = app.openapi()["paths"]["/items"]["post"]
         assert op["x-authz-policy"] == "myapp.defaults.open"
         assert op["x-authz-source"] == "default"
+
+
+class TestSkippedRoutes:
+    """Routes TopazMiddleware never checks are reported as skipped, not as authorized."""
+
+    @pytest.fixture
+    def app(self, config):
+        app = FastAPI()
+        # Docs routes are scanned, so exclude them like a real app would
+        app.add_middleware(
+            TopazMiddleware,
+            config=config,
+            exclude_paths=[r"^/$", r"^/static/.*", r"^/docs", r"^/redoc$", r"^/openapi\.json$"],
+        )
+
+        @app.get("/")
+        def home():
+            return {}
+
+        @app.get("/health")
+        @skip_middleware
+        def health():
+            return {}
+
+        @app.get("/documents")
+        def documents():
+            return []
+
+        public = APIRouter()
+
+        @public.get("/info")
+        def info():
+            return {}
+
+        app.include_router(public, prefix="/public", dependencies=[Depends(SkipMiddleware)])
+        app.mount("/static", FastAPI())
+        return app
+
+    @staticmethod
+    def _skipped(routes) -> dict[tuple[str, str], str | None]:
+        return {(r["method"], r["path"]): r["skipped"] for r in routes}
+
+    def test_scan_routes_reports_skip_reasons(self, app, config):
+        skipped = self._skipped(scan_routes(app, config.policy_path_root))
+        assert skipped[("GET", "/")] == "exclude_paths"
+        assert skipped[("GET", "/health")] == "marker"
+        assert skipped[("GET", "/public/info")] == "marker"
+        assert skipped[("GET", "/static")] == "exclude_paths"
+        assert skipped[("GET", "/documents")] is None
+        for docs_path in ("/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"):
+            assert skipped[("GET", docs_path)] == "exclude_paths"
+
+    def test_markers_apply_without_middleware(self, config):
+        app = FastAPI(**NO_DOCS)
+
+        @app.get("/health")
+        @skip_middleware
+        def health():
+            return {}
+
+        @app.get("/")
+        def home():
+            return {}
+
+        skipped = self._skipped(scan_routes(app, config.policy_path_root))
+        assert skipped == {("GET", "/health"): "marker", ("GET", "/"): None}
+
+    def test_custom_exclude_methods(self, config):
+        app = FastAPI(**NO_DOCS)
+        app.add_middleware(TopazMiddleware, config=config, exclude_methods=["GET"])
+
+        @app.get("/items")
+        def read():
+            return []
+
+        @app.post("/items")
+        def create():
+            return {}
+
+        skipped = self._skipped(scan_routes(app, config.policy_path_root))
+        assert skipped == {("GET", "/items"): "exclude_methods", ("POST", "/items"): None}
+
+    def test_rights_matrix_marks_skipped(self, app, config):
+        config.default_policy = "myapp.defaults.authenticated"
+        by_route = {(r.method, r.route_pattern): r for r in generate_rights_matrix(app, config)}
+        health = by_route[("GET", "/health")]
+        assert health.resolution_source == "skipped"
+        assert health.resolved_policy_path == ""
+        assert health.specific_policy_path == "myapp.GET.health"
+        assert by_route[("GET", "/documents")].resolution_source == "default"
+
+    def test_openapi_skipped_routes_have_no_policy(self, app, config):
+        config.default_policy = "myapp.defaults.authenticated"
+        annotate_openapi(app, config)
+        paths = app.openapi()["paths"]
+        for path in ("/", "/health", "/public/info"):
+            assert paths[path]["get"]["x-authz-source"] == "skipped"
+            assert "x-authz-policy" not in paths[path]["get"]
+        assert paths["/documents"]["get"]["x-authz-policy"] == "myapp.defaults.authenticated"
+
+    def test_policy_diff_lists_skipped_not_missing(self, app, config):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # A policy kept for a skipped route is still referenced, not orphaned
+            (Path(tmpdir) / "myapp" / "GET").mkdir(parents=True)
+            (Path(tmpdir) / "myapp" / "GET" / "health.rego").write_text(
+                "package myapp.GET.health\n"
+            )
+            diff = policy_diff(app, config, tmpdir)
+
+        missing = [m.policy_path for m in diff.missing]
+        assert "myapp.GET.health" in diff.skipped
+        assert "myapp.GET" in diff.skipped
+        assert "myapp.GET.public.info" in diff.skipped
+        assert "myapp.GET.static" in diff.skipped
+        assert "myapp.GET.health" not in missing + diff.valid
+        assert "myapp.GET.health" not in diff.orphaned
+        # Only the authorized route is missing (plus the ReBAC myapp.check policy)
+        assert sorted(missing) == ["myapp.GET.documents", "myapp.check"]
+
+    @requires_frontend
+    def test_frontend_in_skipped_router(self, config, tmp_path):
+        (tmp_path / "index.html").write_text("<html></html>")
+        app = FastAPI(**NO_DOCS)
+        public = APIRouter()
+        public.frontend("/", directory=tmp_path)
+        app.include_router(public, prefix="/public", dependencies=[Depends(SkipMiddleware)])
+        app.frontend("/app", directory=tmp_path)
+
+        skipped = self._skipped(scan_routes(app, config.policy_path_root))
+        assert skipped == {("GET", "/public"): "marker", ("GET", "/app"): None}

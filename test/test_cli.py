@@ -596,3 +596,72 @@ class TestCliReviewFixes:
         out = capsys.readouterr().out
         assert "cfg.GET.aircraft_programs" in out
         assert "cfg.GET.aircraft-programs" not in out
+
+
+SKIP_APP_CODE = """
+from fastapi import FastAPI
+from fastapi_topaz import TopazMiddleware, TopazConfig, skip_middleware
+from aserto.client import AuthorizerOptions, Identity, IdentityType
+
+config = TopazConfig(
+    authorizer_options=AuthorizerOptions(url="localhost:8282"),
+    policy_path_root="testapp",
+    identity_provider=lambda r: Identity(type=IdentityType.IDENTITY_TYPE_NONE, value=""),
+    policy_instance_name="test",
+)
+app = FastAPI()
+app.add_middleware(TopazMiddleware, config=config, exclude_paths=[r"^/public/.*"])
+
+@app.get("/health")
+@skip_middleware
+def health():
+    return {}
+
+@app.get("/public/info")
+def info():
+    return {}
+
+@app.get("/items")
+def items():
+    return []
+"""
+
+
+class TestSkippedRoutesCli:
+    """check and policy-diff report routes TopazMiddleware skips."""
+
+    @pytest.fixture
+    def skip_app(self, tmp_path, monkeypatch):
+        (tmp_path / "skipapp.py").write_text(SKIP_APP_CODE)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        return "skipapp:app"
+
+    @pytest.mark.parametrize("path", ["/health", "/public/info"])
+    def test_check_reports_skipped(self, skip_app, capsys, path):
+        result = cmd_check(MockArgs(app=skip_app, root="testapp", method="GET", path=path))
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Source:   skipped" in out
+        assert "not authorized by TopazMiddleware" in out
+
+    def test_check_live_skipped_does_not_evaluate(self, skip_app, capsys):
+        from unittest.mock import AsyncMock
+
+        args = MockArgs(app=skip_app, root="testapp", method="GET", path="/health", live=True)
+        with patch(
+            "fastapi_topaz._client.SharedAuthorizerClient.decisions", new=AsyncMock()
+        ) as decisions:
+            result = cmd_check(args)
+        assert result == 0
+        decisions.assert_not_called()
+        assert "no live evaluation" in capsys.readouterr().out
+
+    def test_policy_diff_lists_skipped(self, skip_app, capsys, tmp_path):
+        result = cmd_policy_diff(MockArgs(app=skip_app, root="testapp", policies=str(tmp_path)))
+        out = capsys.readouterr().out
+        assert result == 1  # testapp.GET.items is still missing
+        assert "Skipped by TopazMiddleware (2):" in out
+        assert "testapp.GET.health" in out.split("Skipped by TopazMiddleware")[1]
+        missing_section = out.split("Missing policies")[1].split("\n\n")[0]
+        assert "testapp.GET.health" not in missing_section
+        assert "2 skipped" in out

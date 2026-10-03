@@ -141,11 +141,16 @@ def cmd_policy_diff(args: argparse.Namespace) -> int:
     if diff.valid:
         print(f"\nOK Explicit policies: {len(diff.valid)}")
 
+    if diff.skipped:
+        print(f"\nSkipped by TopazMiddleware ({len(diff.skipped)}):")
+        for s in diff.skipped:
+            print(f"   - {s}")
+
     total_covered = len(diff.valid) + len(diff.group_covered) + len(diff.default_covered)
     if diff.has_issues:
         print(
             f"\nSummary: {len(diff.missing)} missing, {len(diff.orphaned)} orphaned, "
-            f"{total_covered} covered"
+            f"{total_covered} covered, {len(diff.skipped)} skipped"
         )
         return 1 if args.strict or diff.missing else 0
 
@@ -276,6 +281,12 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 2
 
     print(f"Route:    {method} {matched_route.path}")
+    if resolution.resolution_source == "skipped":
+        print("Policy:   none (route is not authorized by TopazMiddleware)")
+        print("Source:   skipped")
+        if args.live:
+            print("Skipped routes have no middleware policy; no live evaluation")
+        return 0
     print(f"Policy:   {resolution.resolved_policy_path}")
     print(f"Source:   {resolution.resolution_source}")
     if path_params:

@@ -19,7 +19,7 @@ from starlette.routing import Match
 
 from ._policy import _compile_policy_groups, _resolve_policy_path, scan_policy_files
 from ._routes import FrontendMatchError, iter_routes, match_frontend_route
-from .config import TopazConfig
+from .config import OnError, TopazConfig
 
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
@@ -86,6 +86,48 @@ def _dependant_has_skip(dependant: Any) -> bool:
     return False
 
 
+def route_skips_middleware(route: Any) -> bool:
+    """Whether *route* opts out of TopazMiddleware.
+
+    True for an endpoint decorated with :func:`skip_middleware`, or a route
+    with ``Depends(SkipMiddleware)`` at route, router, or sub-dependency level.
+    """
+    endpoint = getattr(route, "endpoint", None)
+    if endpoint and getattr(endpoint, "__skip_topaz_middleware__", False):
+        return True
+
+    for dep in getattr(route, "dependencies", None) or []:
+        if getattr(dep, "dependency", None) is SkipMiddleware:
+            return True
+
+    dependant = getattr(route, "dependant", None)
+    return bool(dependant) and _dependant_has_skip(dependant)
+
+
+_DEFAULT_EXCLUDE_METHODS = ("OPTIONS", "HEAD")
+
+
+def middleware_exclusions(app: Any) -> tuple[list[re.Pattern[str]], set[str]] | None:
+    """Return the ``exclude_paths`` patterns and ``exclude_methods`` of *app*'s TopazMiddleware.
+
+    Read from ``app.user_middleware`` (the arguments given to
+    ``add_middleware()``). Returns ``None`` when TopazMiddleware is not installed.
+    """
+    for middleware in getattr(app, "user_middleware", None) or []:
+        if getattr(middleware, "cls", None) is not TopazMiddleware:
+            continue
+        # Starlette >= 0.35 stores kwargs; older versions store options
+        options = getattr(middleware, "kwargs", None)
+        if options is None:
+            options = getattr(middleware, "options", None) or {}
+        patterns: list[re.Pattern[str]] = [
+            re.compile(p) for p in (options.get("exclude_paths") or [])
+        ]
+        methods: set[str] = set(options.get("exclude_methods") or _DEFAULT_EXCLUDE_METHODS)
+        return patterns, methods
+    return None
+
+
 class TopazMiddleware:
     """
     FastAPI middleware for global authorization (pure ASGI).
@@ -110,8 +152,10 @@ class TopazMiddleware:
         on_denied: Optional callback to customize 403 response
         on_error: How to respond when the authorization check itself fails
             (e.g. authorizer unreachable) and no circuit breaker fallback applies:
-            - "deny": Return 403 Forbidden (fail-closed default)
-            - "unavailable": Return 503 Service Unavailable
+            - None (default): use ``config.on_error``, shared with the dependencies
+            - "deny": Return 403 Forbidden (``on_denied`` is used when set)
+            - "unavailable": Return 503 Service Unavailable, with ``Retry-After``
+              when the config has a circuit breaker
         policies_dir: Optional directory to scan for explicit ``.rego`` policy files
             at startup.  When provided, the middleware builds a set of known policy
             paths and uses the resolution chain to decide which policy to evaluate
@@ -126,16 +170,18 @@ class TopazMiddleware:
         exclude_methods: list[str] | None = None,
         on_missing_identity: Literal["deny", "anonymous"] = "deny",
         on_denied: Callable[[Request, str], Response] | None = None,
-        on_error: Literal["deny", "unavailable"] = "deny",
+        on_error: OnError | None = None,
         policies_dir: str | Path | None = None,
     ) -> None:
         self.app = app
         self.config = config
         self.exclude_paths = [re.compile(p) for p in (exclude_paths or [])]
-        self.exclude_methods = set(exclude_methods or ["OPTIONS", "HEAD"])
+        self.exclude_methods = set(exclude_methods or _DEFAULT_EXCLUDE_METHODS)
         self.on_missing_identity = on_missing_identity
         self.on_denied = on_denied
-        self.on_error = on_error
+        if on_error not in (None, "deny", "unavailable"):
+            raise ValueError(f"on_error must be 'deny', 'unavailable' or None, got {on_error!r}")
+        self.on_error: OnError | None = on_error
 
         # --- Resolution chain setup ---
         # Scan explicit policy files
@@ -255,22 +301,7 @@ class TopazMiddleware:
             if pattern.match(path):
                 return True
 
-        if route:
-            endpoint = getattr(route, "endpoint", None)
-            if endpoint and getattr(endpoint, "__skip_topaz_middleware__", False):
-                return True
-
-            dependencies = getattr(route, "dependencies", None) or []
-            for dep in dependencies:
-                dep_callable = getattr(dep, "dependency", None)
-                if dep_callable is SkipMiddleware:
-                    return True
-
-            dependant = getattr(route, "dependant", None)
-            if dependant and _dependant_has_skip(dependant):
-                return True
-
-        return False
+        return bool(route) and route_skips_middleware(route)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -365,15 +396,13 @@ class TopazMiddleware:
             deny_body = {"detail": "Forbidden", "policy": policy_path, "source": "middleware"}
 
         if check_error is not None:
-            if self.on_error == "unavailable":
-                response = JSONResponse(
-                    status_code=503,
-                    content={"detail": "Authorization service unavailable"},
-                )
-            elif self.on_denied:
+            status_code, body, headers = self.config._authz_error_response(
+                policy_path, "middleware", check_error, self.on_error
+            )
+            if status_code == 403 and self.on_denied:
                 response = self.on_denied(request, policy_path)
             else:
-                response = JSONResponse(status_code=403, content=deny_body)
+                response = JSONResponse(status_code=status_code, content=body, headers=headers)
             await response(scope, receive, send)
             return
 

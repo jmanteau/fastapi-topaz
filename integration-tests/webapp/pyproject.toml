@@ -5,11 +5,10 @@ description = "Test webapp for fastapi-topaz ABAC capabilities"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi-topaz",
-    # <0.122: newer FastAPI (0.139) changes scope["route"] for prefixed routers
-    # (un-prefixed path), breaking require_policy_auto policy path generation
-    "fastapi>=0.115.0,<0.122",
+    # Same exclusions as the library; override per build with FASTAPI_SPEC
+    "fastapi>=0.115.0,!=0.137.0,!=0.137.1",
     "uvicorn[standard]>=0.32.0",
-    "sqlalchemy>=2.0.36",
+    "sqlalchemy>=2.0.36,<2.1",
     "alembic>=1.14.0",
     "psycopg2-binary>=2.9.10",
     "authlib>=1.4.0",
@@ -19,6 +18,8 @@ dependencies = [
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
     "itsdangerous>=2.1.0",
+    # <46: cryptography 46+ wheels SIGILL under the libkrun Podman VM on Apple Silicon
+    "cryptography<46",
 ]
 
 [project.optional-dependencies]

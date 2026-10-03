@@ -6,14 +6,14 @@ Global request-level authorization that runs before route handlers.
 
 ```python
 from fastapi import FastAPI
-from fastapi_topaz import AuthorizationMiddleware
+from fastapi_topaz import TopazMiddleware
 
 app = FastAPI()
 
 app.add_middleware(
-    AuthorizationMiddleware,
+    TopazMiddleware,
     config=topaz_config,
-    exclude=["/health", "/metrics", "/docs", "/openapi.json"],
+    exclude_paths=[r"^/health$", r"^/metrics$", r"^/docs", r"^/openapi\.json$"],
 )
 ```
 
@@ -34,48 +34,46 @@ flowchart TD
     J -->|Yes| D
 ```
 
-## Exclude Patterns
+## Excluding Routes
 
-### Exact Path
+### By Path: `exclude_paths`
 
-```python
-exclude=["/health", "/login", "/callback"]
-```
-
-### Prefix Match
+Each entry is a regular expression matched against the request path with `re.match`, so it is anchored at the start but not at the end:
 
 ```python
-exclude=["/public/"]  # Trailing slash = prefix
-# Matches: /public/foo, /public/bar/baz
-```
-
-### Regex Pattern
-
-```python
-exclude=[
-    re.compile(r"^/api/v1/public/.*"),
-    re.compile(r".*\.(css|js|png)$"),
+exclude_paths=[
+    r"^/health$",        # exactly /health
+    r"^/public/",        # /public/foo, /public/bar/baz
+    r".*\.(css|js|png)$", # static assets anywhere
 ]
 ```
 
-### Method-Specific
+Without a trailing `$`, a pattern is a prefix: `r"^/health"` also excludes `/healthcheck`.
+
+### By Method: `exclude_methods`
 
 ```python
-exclude=[
-    ("GET", "/documents"),  # Allow listing without auth
-]
+exclude_methods=["OPTIONS", "HEAD"]  # the default
 ```
 
-### Combined
+The list applies to every route. To exclude one method of one route, use a marker instead.
+
+### Per Route: `@skip_middleware` and `SkipMiddleware`
 
 ```python
-exclude=[
-    "/health",
-    "/public/",
-    ("GET", "/docs"),
-    re.compile(r"^/static/.*"),
-]
+from fastapi import Depends
+from fastapi_topaz import SkipMiddleware, skip_middleware
+
+@app.get("/status")
+@skip_middleware
+async def status():
+    ...
+
+# A whole router, frontend routes included
+app.include_router(public_router, prefix="/public", dependencies=[Depends(SkipMiddleware)])
 ```
+
+`annotate_openapi`, `policy-diff` and the rights matrix report all of these routes as `skipped`. See [Routes the middleware skips](policy-generation.md#routes-the-middleware-skips).
 
 ## Policy Path Resolution
 
@@ -128,9 +126,9 @@ Middleware for broad protection, dependencies for specific checks:
 ```python
 # Middleware protects all non-excluded routes
 app.add_middleware(
-    AuthorizationMiddleware,
+    TopazMiddleware,
     config=topaz_config,
-    exclude=["/health"],
+    exclude_paths=[r"^/health$"],
 )
 
 # Dependencies for additional ReBAC checks
@@ -146,35 +144,50 @@ async def get_document(
 
 ## Configuration Options
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| config | TopazConfig | Configuration instance |
-| exclude | list | Routes to skip (paths, prefixes, regexes) |
-| on_unauthorized | Callable | Custom 401 handler |
-| on_forbidden | Callable | Custom 403 handler |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `config` | `TopazConfig` | required | Configuration instance |
+| `exclude_paths` | `list[str]` | `None` | Regexes for request paths to skip |
+| `exclude_methods` | `list[str]` | `["OPTIONS", "HEAD"]` | HTTP methods to skip |
+| `on_missing_identity` | `"deny"` or `"anonymous"` | `"deny"` | `"deny"` answers 401; `"anonymous"` lets the policy decide |
+| `on_denied` | `Callable[[Request, str], Response]` | `None` | Builds the 403 response; receives the policy path |
+| `on_error` | `"deny"`, `"unavailable"` or `None` | `None` | Overrides `config.on_error` for the middleware; see below |
+| `policies_dir` | path | `None` | Directory of `.rego` files for the explicit tier of the resolution chain |
 
-## Custom Error Handlers
+## Custom Denial Response
 
 ```python
-async def custom_unauthorized(request: Request) -> Response:
-    return JSONResponse(
-        status_code=401,
-        content={"error": "Please login first"},
-    )
+from fastapi import Request
+from fastapi.responses import JSONResponse
 
-async def custom_forbidden(request: Request) -> Response:
-    return JSONResponse(
-        status_code=403,
-        content={"error": "You don't have permission"},
-    )
+def custom_denied(request: Request, policy_path: str) -> JSONResponse:
+    return JSONResponse(status_code=403, content={"error": "You don't have permission"})
 
-app.add_middleware(
-    AuthorizationMiddleware,
-    config=topaz_config,
-    on_unauthorized=custom_unauthorized,
-    on_forbidden=custom_forbidden,
-)
+app.add_middleware(TopazMiddleware, config=topaz_config, on_denied=custom_denied)
 ```
+
+## When the Authorizer Fails: `on_error`
+
+When the Topaz call itself fails (authorizer unreachable, deadline exceeded, a policy that doesn't exist) and the circuit breaker gives no fallback decision, the response depends on `TopazConfig(on_error=...)`. The middleware and every dependency use the same setting:
+
+| `on_error` | Response | Notes |
+|------------|----------|-------|
+| `"deny"` (default) | 403 `{"detail": "Forbidden"}`, or your `on_denied` response | Indistinguishable from a denial |
+| `"unavailable"` | 503 `{"detail": "Authorization service unavailable"}` | `Retry-After` is set to the circuit breaker's `recovery_timeout` when one is configured |
+
+Both fail closed: nothing is let through. Choose by what your clients and monitoring should see:
+
+- **`"deny"`** keeps outages quiet for clients, and HTTP clients and proxies don't retry 403. But an outage shows up as a burst of 403s, which security monitoring may misread.
+- **`"unavailable"`** tells clients and monitoring the truth, and 5xx alerting catches outages. Proxies, load balancers and HTTP clients may retry 503s; `Retry-After` tells them when.
+
+```python
+config = TopazConfig(..., on_error="unavailable")
+
+# Or only for the middleware, keeping 403 in the dependencies
+app.add_middleware(TopazMiddleware, config=config, on_error="unavailable")
+```
+
+With `expose_deny_reason=True`, the body also names the `policy`, the `source` and the `error` type.
 
 ## Mounted Sub-Applications
 

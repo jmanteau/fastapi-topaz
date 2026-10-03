@@ -19,7 +19,6 @@ Complete reference for all fastapi-topaz public exports.
         - invalidate_cache
         - health
         - policy_path_for
-        - create_client
 
 ---
 
@@ -127,12 +126,22 @@ Complete reference for all fastapi-topaz public exports.
       members:
         - state
         - status
+        - admit
         - should_allow_request
         - record_success
         - record_failure
+        - release_probe
         - get_fallback_decision
         - reset
         - is_failure_exception
+
+---
+
+### Admission
+
+::: fastapi_topaz.Admission
+    options:
+      show_root_heading: false
 
 ---
 
@@ -147,32 +156,6 @@ Complete reference for all fastapi-topaz public exports.
 ### CircuitStatus
 
 ::: fastapi_topaz.CircuitStatus
-    options:
-      show_root_heading: false
-
----
-
-## Connection Pool
-
-### ConnectionPool
-
-::: fastapi_topaz.ConnectionPool
-    options:
-      show_root_heading: false
-      members:
-        - configure
-        - initialize
-        - acquire
-        - release
-        - connection
-        - status
-        - close
-
----
-
-### PoolStatus
-
-::: fastapi_topaz.PoolStatus
     options:
       show_root_heading: false
 
@@ -264,32 +247,3 @@ from fastapi_topaz import (
 )
 ```
 
-### AuthorizationError
-
-!!! warning "Deprecated"
-    `fastapi_topaz.AuthorizationError` is deprecated and will be removed in 2.0.
-    Importing it emits a `DeprecationWarning`. It is not raised by any
-    fastapi-topaz code path; authorization failures surface as
-    `HTTPException(403)`.
-
-::: fastapi_topaz.AuthorizationError
-    options:
-      show_root_heading: false
-
----
-
-## Type Aliases
-
-!!! warning "Deprecated"
-    The `IdentityMapper`, `StringMapper`, `ObjectMapper`, and `ResourceMapper`
-    aliases are deprecated and will be removed in 2.0. Importing them from
-    `fastapi_topaz` emits a `DeprecationWarning`.
-
-```python
-from fastapi_topaz._defaults import (
-    IdentityMapper,   # Callable[[], Identity]
-    StringMapper,     # Callable[[], str]
-    ObjectMapper,     # Callable[[], Obj]
-    ResourceMapper,   # Callable[[], ResourceContext]
-)
-```

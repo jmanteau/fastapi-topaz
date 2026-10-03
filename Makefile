@@ -5,14 +5,15 @@
 .PHONY: help setup clean lint lint-fix quality test test-fast ci info
 .PHONY: docs docs-serve docs-build docs-deploy
 .PHONY: py-security typecheck version build test-upload upload git-status git-tag release
-.PHONY: int-build int-up int-up-topaz int-down int-restart int-restart-webapp int-clean int-status int-setup
+.PHONY: int-build int-up int-up-topaz int-down int-restart int-restart-webapp int-clean int-status int-setup int-doctor _require-hosts
 .PHONY: live-test live-test-fast
 .PHONY: int-logs int-logs1 int-logs5 int-logs-webapp int-logs-topaz int-logs-authentik
 .PHONY: int-db-upgrade int-db-migrate int-db-downgrade int-db-shell
 .PHONY: int-shell int-topaz-shell int-topaz-reload int-auth-password int-certs
 .PHONY: int-tf-init int-tf-plan int-tf-apply int-tf-destroy
 .PHONY: int-lint int-lint-fix
-.PHONY: e2e e2e-fast e2e-alice e2e-bob e2e-cookies e2e-clean _require-infra
+.PHONY: e2e e2e-fast e2e-alice e2e-bob e2e-cookies e2e-clean e2e-v12 e2e-matrix _require-infra
+.PHONY: int-policy-diff
 
 # Colors
 RESET := \033[0m
@@ -26,6 +27,37 @@ YELLOW := \033[0;33m
 INT_DIR := integration-tests
 E2E_DIR := integration-tests/e2e
 TF_DIR := integration-tests/infra/terraform/authentik-webapp
+
+# Per-machine overrides (COMPOSE, TF, DOCKER_HOST); see local.mk.example
+-include local.mk
+
+# Podman: point Docker clients at the Podman machine socket when no Docker daemon answers
+ifndef DOCKER_HOST
+  ifneq ($(shell command -v podman 2>/dev/null),)
+    ifeq ($(shell docker info >/dev/null 2>&1 && echo ok),)
+      PODMAN_SOCK := $(shell podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null)
+      ifneq ($(PODMAN_SOCK),)
+        export DOCKER_HOST := unix://$(PODMAN_SOCK)
+      endif
+    endif
+  endif
+endif
+
+# Compose command: docker compose, docker-compose, or podman compose
+ifndef COMPOSE
+  COMPOSE := $(shell \
+    if docker compose version >/dev/null 2>&1; then echo "docker compose"; \
+    elif command -v docker-compose >/dev/null 2>&1; then echo docker-compose; \
+    elif command -v podman >/dev/null 2>&1; then echo "podman compose"; fi)
+endif
+
+# Terraform or OpenTofu
+ifndef TF
+  TF := $(shell command -v terraform >/dev/null 2>&1 && echo terraform || echo tofu)
+endif
+
+# FastAPI version spec for the webapp image (empty = latest allowed), e.g. FASTAPI_SPEC='<0.137'
+export FASTAPI_SPEC
 
 ##@ Help
 help: ## Display this help message
@@ -102,7 +134,7 @@ docs-serve: cmd-exists-uv ## Serve docs locally with live reload
 
 docs-build: cmd-exists-uv ## Build static documentation
 	@echo "$(BLUE)Building documentation...$(RESET)"
-	uv run --extra docs mkdocs build
+	uv run --extra docs mkdocs build --strict
 	@echo "$(GREEN)Documentation built in site/$(RESET)"
 
 docs-deploy: cmd-exists-uv ## Deploy docs to GitHub Pages
@@ -116,18 +148,18 @@ docs-deploy: cmd-exists-uv ## Deploy docs to GitHub Pages
 int-build: ## Build Docker containers
 	@cd $(INT_DIR) && \
 	if [ ! -f .env ]; then cat env.authentik .env.example > .env 2>/dev/null || cat env.authentik > .env; fi && \
-	docker-compose build
+	$(COMPOSE) build
 
 int-up: ## Start all services
 	@cd $(INT_DIR) && \
 	if [ ! -f .env ]; then cat env.authentik .env.example > .env 2>/dev/null || cat env.authentik > .env; fi && \
-	docker-compose up -d
+	$(COMPOSE) up -d
 	@echo "Services: Webapp http://localhost:8000 | Authentik http://localhost:9000"
 
 int-up-topaz: ## Start only the Topaz container
 	@cd $(INT_DIR) && \
 	if [ ! -f .env ]; then cat env.authentik .env.example > .env 2>/dev/null || cat env.authentik > .env; fi && \
-	docker-compose up -d topaz
+	$(COMPOSE) up -d topaz
 	@echo "Topaz: grpc://localhost:8282 (TLS) | health http://localhost:9494"
 
 live-test: int-up-topaz ## Run live-Topaz integration tests (stops/starts topaz)
@@ -137,16 +169,16 @@ live-test-fast: int-up-topaz ## Live tests excluding disruptive (container stop/
 	uv run pytest integration-tests/live -c integration-tests/live/pytest.ini -v -m "not disruptive"
 
 int-down: ## Stop all services
-	cd $(INT_DIR) && docker-compose down
+	cd $(INT_DIR) && $(COMPOSE) down
 
 int-restart: ## Restart all services
-	cd $(INT_DIR) && docker-compose restart
+	cd $(INT_DIR) && $(COMPOSE) restart
 
 int-restart-webapp: ## Rebuild and restart webapp only
-	cd $(INT_DIR) && docker-compose build webapp && docker-compose up -d webapp
+	cd $(INT_DIR) && $(COMPOSE) build webapp && $(COMPOSE) up -d webapp
 
 int-clean: ## Stop services and remove volumes
-	cd $(INT_DIR) && docker-compose down -v && rm -f .env .env.oidc
+	cd $(INT_DIR) && $(COMPOSE) down -v && rm -f .env .env.oidc
 
 int-status: ## Show service status and health
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -168,7 +200,7 @@ int-status: ## Show service status and health
 	@echo "  Authentik DB:      postgresql://localhost:5433"
 	@echo ""
 	@echo "Container Status:"
-	@cd $(INT_DIR) && docker-compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "  Containers not running"
+	@cd $(INT_DIR) && $(COMPOSE) ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "  Containers not running"
 	@echo ""
 	@echo "Health Checks:"
 	@printf "  Webapp:           " && curl -sf http://localhost:8000/health >/dev/null 2>&1 && echo "$(GREEN)Healthy$(RESET)" || echo "$(YELLOW)Unhealthy$(RESET)"
@@ -179,7 +211,27 @@ int-status: ## Show service status and health
 	@echo "Run 'make int-logs' to view logs, 'make help' for more commands"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-int-setup: int-certs int-build int-up ## Full setup (certs + build + start + migrate + terraform)
+int-doctor: cmd-exists-openssl cmd-exists-curl cmd-exists-uv ## Check integration prerequisites
+	@echo "$(BLUE)Integration prerequisites$(RESET)"
+	@echo "  COMPOSE:     $(if $(COMPOSE),$(COMPOSE),<none>)"
+	@echo "  TF:          $(TF)"
+	@echo "  DOCKER_HOST: $(if $(DOCKER_HOST),$(DOCKER_HOST),<default>)"
+	@test -n "$(COMPOSE)" || \
+		{ echo "$(YELLOW)Error: no compose command found. Install Docker Compose or Podman, or set COMPOSE in local.mk.$(RESET)"; exit 1; }
+	@cd $(INT_DIR) && $(COMPOSE) ps >/dev/null 2>&1 || \
+		{ echo "$(YELLOW)Error: '$(COMPOSE)' cannot reach a container engine. Start Docker or 'podman machine start', or set DOCKER_HOST in local.mk.$(RESET)"; exit 1; }
+	@command -v $(TF) >/dev/null 2>&1 || \
+		{ echo "$(YELLOW)Error: '$(TF)' not found. Install Terraform or OpenTofu, or set TF in local.mk.$(RESET)"; exit 1; }
+	@$(MAKE) --no-print-directory _require-hosts
+	@echo "$(GREEN)All prerequisites OK$(RESET)"
+
+# The e2e client follows the OIDC redirect to http://authentik-server:9000 from the host
+_require-hosts:
+	@grep -Eq '^[[:space:]]*127\.0\.0\.1[[:space:]].*\bauthentik-server\b' /etc/hosts || \
+		{ echo "$(YELLOW)Error: authentik-server does not resolve to 127.0.0.1. Run:$(RESET)"; \
+		  echo "  echo \"127.0.0.1 authentik-server\" | sudo tee -a /etc/hosts"; exit 1; }
+
+int-setup: int-doctor int-certs int-build int-up ## Full setup (certs + build + start + migrate + terraform)
 	@echo "Waiting for services..."
 	@sleep 15
 	@$(MAKE) int-db-upgrade
@@ -192,49 +244,49 @@ int-setup: int-certs int-build int-up ## Full setup (certs + build + start + mig
 ##@ Integration - Logs
 # ==============================================================================
 int-logs: ## View all service logs (follow)
-	cd $(INT_DIR) && docker-compose logs -f
+	cd $(INT_DIR) && $(COMPOSE) logs -f
 
 int-logs1: ## View logs from last 1 minute
-	cd $(INT_DIR) && docker-compose logs --since 1m
+	cd $(INT_DIR) && $(COMPOSE) logs --since 1m
 
 int-logs5: ## View logs from last 5 minutes
-	cd $(INT_DIR) && docker-compose logs --since 5m
+	cd $(INT_DIR) && $(COMPOSE) logs --since 5m
 
 int-logs-webapp: ## View webapp logs only
-	cd $(INT_DIR) && docker-compose logs -f webapp
+	cd $(INT_DIR) && $(COMPOSE) logs -f webapp
 
 int-logs-topaz: ## View Topaz logs only
-	cd $(INT_DIR) && docker-compose logs -f topaz
+	cd $(INT_DIR) && $(COMPOSE) logs -f topaz
 
 int-logs-authentik: ## View Authentik logs only
-	cd $(INT_DIR) && docker-compose logs -f authentik-server
+	cd $(INT_DIR) && $(COMPOSE) logs -f authentik-server
 
 # ==============================================================================
 ##@ Integration - Database
 # ==============================================================================
 int-db-upgrade: ## Run database migrations
-	cd $(INT_DIR) && docker-compose exec webapp uv run alembic upgrade head
+	cd $(INT_DIR) && $(COMPOSE) exec webapp uv run alembic upgrade head
 
 int-db-migrate: ## Generate new migration (usage: make int-db-migrate msg="description")
-	cd $(INT_DIR) && docker-compose exec webapp uv run alembic revision --autogenerate -m "$(msg)"
+	cd $(INT_DIR) && $(COMPOSE) exec webapp uv run alembic revision --autogenerate -m "$(msg)"
 
 int-db-downgrade: ## Rollback last migration
-	cd $(INT_DIR) && docker-compose exec webapp uv run alembic downgrade -1
+	cd $(INT_DIR) && $(COMPOSE) exec webapp uv run alembic downgrade -1
 
 int-db-shell: ## Open PostgreSQL shell
-	cd $(INT_DIR) && docker-compose exec postgres psql -U webapp -d webapp_db
+	cd $(INT_DIR) && $(COMPOSE) exec postgres psql -U webapp -d webapp_db
 
 # ==============================================================================
 ##@ Integration - Shells & Debug
 # ==============================================================================
 int-shell: ## Open webapp container shell
-	cd $(INT_DIR) && docker-compose exec webapp /bin/bash
+	cd $(INT_DIR) && $(COMPOSE) exec webapp /bin/bash
 
 int-topaz-shell: ## Open Topaz container shell
-	cd $(INT_DIR) && docker-compose exec topaz /bin/sh
+	cd $(INT_DIR) && $(COMPOSE) exec topaz /bin/sh
 
 int-topaz-reload: ## Reload Topaz policies
-	cd $(INT_DIR) && docker-compose restart topaz
+	cd $(INT_DIR) && $(COMPOSE) restart topaz
 	@echo "Topaz restarted with updated policies"
 
 int-auth-password: ## Get Authentik bootstrap password
@@ -270,30 +322,37 @@ int-certs: ## Generate TLS certificates for Topaz
 # ==============================================================================
 int-tf-init: ## Initialize Terraform
 	@export TF_VAR_authentik_token=$$(grep '^AUTHENTIK_BOOTSTRAP_TOKEN' $(INT_DIR)/env.authentik | cut -d= -f2) && \
-	cd $(TF_DIR) && terraform init
+	cd $(TF_DIR) && $(TF) init
 
 int-tf-plan: ## Plan Terraform changes
 	@export TF_VAR_authentik_token=$$(grep '^AUTHENTIK_BOOTSTRAP_TOKEN' $(INT_DIR)/env.authentik | cut -d= -f2) && \
-	cd $(TF_DIR) && terraform plan
+	cd $(TF_DIR) && $(TF) plan
 
 int-tf-apply: ## Apply Terraform (create OIDC + users)
 	@echo "Waiting for Authentik to be ready..."
-	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
-		if curl -sf http://localhost:9000/-/health/ready/ >/dev/null 2>&1; then \
+	@# /-/health/ready/ passes before the worker's blueprints create the managed OAuth scope
+	@# mappings that main.tf looks up; the API answers 400 for this filter until they exist.
+	@token=$$(grep '^AUTHENTIK_BOOTSTRAP_TOKEN' $(INT_DIR)/env.authentik | cut -d= -f2); \
+	for i in $$(seq 1 36); do \
+		if curl -sf -H "Authorization: Bearer $$token" \
+			'http://localhost:9000/api/v3/propertymappings/provider/scope/?managed=goauthentik.io/providers/oauth2/scope-openid' \
+			>/dev/null 2>&1; then \
 			echo "$(GREEN)Authentik ready$(RESET)"; \
-			break; \
+			exit 0; \
 		fi; \
-		echo "  Waiting... ($$i/12)"; \
+		echo "  Waiting... ($$i/36)"; \
 		sleep 5; \
-	done
+	done; \
+	echo "$(YELLOW)Error: Authentik not ready after 3 minutes. Check 'make int-logs-authentik'.$(RESET)"; exit 1
 	@export TF_VAR_authentik_token=$$(grep '^AUTHENTIK_BOOTSTRAP_TOKEN' $(INT_DIR)/env.authentik | cut -d= -f2) && \
-	cd $(TF_DIR) && terraform apply -auto-approve
-	@cd $(INT_DIR) && docker-compose restart webapp
+	cd $(TF_DIR) && $(TF) apply -auto-approve
+	@# Recreate, not restart: env_file (.env.oidc) is only read when the container is created
+	@cd $(INT_DIR) && $(COMPOSE) up -d --force-recreate --no-deps webapp
 	@echo "$(GREEN)Test users: alice@example.com, bob@example.com, charlie@example.com (password: password)$(RESET)"
 
 int-tf-destroy: ## Destroy Terraform resources
 	@export TF_VAR_authentik_token=$$(grep '^AUTHENTIK_BOOTSTRAP_TOKEN' $(INT_DIR)/env.authentik | cut -d= -f2) && \
-	cd $(TF_DIR) && terraform destroy -auto-approve
+	cd $(TF_DIR) && $(TF) destroy -auto-approve
 
 # ==============================================================================
 ##@ Integration - Quality
@@ -311,9 +370,9 @@ int-lint-fix: ## Fix linting in integration tests
 # ==============================================================================
 ##@ E2E Tests
 # ==============================================================================
-_require-infra:
+_require-infra: _require-hosts
 	@echo "$(BLUE)Checking infrastructure...$(RESET)"
-	@cd $(INT_DIR) && docker-compose ps --status running 2>/dev/null | grep -q webapp || \
+	@cd $(INT_DIR) && $(COMPOSE) ps --status running 2>/dev/null | grep -q webapp || \
 		{ echo "$(YELLOW)Error: Docker services not running. Run 'make int-setup' or 'make int-up' first.$(RESET)"; exit 1; }
 	@printf "  Webapp:     "; \
 	for i in 1 2 3 4 5 6; do \
@@ -349,8 +408,35 @@ _require-infra:
 e2e-init: ## Init e2e tests
 	cd $(E2E_DIR) && uv sync
 
-e2e: _require-infra ## Run all e2e tests
+e2e: _require-infra int-policy-diff ## Run all e2e tests
 	cd $(E2E_DIR) && uv run python run_tests.py
+
+e2e-v12: _require-infra ## Run 1.2.x feature tests (frontend, mounts, OpenAPI, batch, health)
+	cd $(E2E_DIR) && uv run python run_tests.py v12
+
+# FastAPI 0.137 replaced the flat app.routes list with a tree of included routers;
+# run the suite on both layouts, then rebuild the webapp on latest
+e2e-matrix: _require-infra ## Run e2e on latest FastAPI and on <0.137
+	@status=0; \
+	for spec in "" "<0.137"; do \
+		echo "$(BLUE)== FastAPI $${spec:-latest}$(RESET)"; \
+		FASTAPI_SPEC="$$spec" $(MAKE) --no-print-directory int-restart-webapp >/dev/null || { status=1; break; }; \
+		for i in $$(seq 1 30); do curl -sf http://localhost:8000/health >/dev/null && break; sleep 2; done; \
+		curl -s http://localhost:8000/health | python3 -c 'import json,sys; print("   webapp FastAPI", json.load(sys.stdin)["fastapi"])'; \
+		$(MAKE) --no-print-directory e2e || { status=1; break; }; \
+	done; \
+	if [ -n "$$spec" ]; then \
+		echo "$(BLUE)Rebuilding webapp on latest FastAPI$(RESET)"; \
+		FASTAPI_SPEC= $(MAKE) --no-print-directory int-restart-webapp >/dev/null; \
+	fi; \
+	exit $$status
+
+int-policy-diff: ## Check webapp routes against integration policies (frontends and mounts included)
+	@cd $(INT_DIR) && out=$$($(COMPOSE) exec -T webapp uv run fastapi-topaz policy-diff \
+		--app app.main:app --config app.topaz_integration:topaz_config --policies /infra/policies 2>&1); \
+	status=$$?; \
+	printf '%s\n' "$$out" | grep -v -e '^INFO' -e 'DeprecationWarning' -e '_compat import'; \
+	exit $$status
 
 e2e-fast: _require-infra ## Run e2e tests with cached cookies
 	cd $(E2E_DIR) && uv run python run_tests.py

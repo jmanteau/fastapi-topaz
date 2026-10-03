@@ -264,8 +264,12 @@ async def get_document_permissions(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
+    batch: bool = False,
 ) -> PermissionsResponse:
-    """Get current user's effective permissions on a document via Topaz."""
+    """Get current user's effective permissions on a document via Topaz.
+
+    ``?batch=true`` evaluates all relations in one Topaz call.
+    """
     document = db.query(Document).filter(Document.id == id).first()
 
     if not document:
@@ -277,6 +281,7 @@ async def get_document_permissions(
         object_type="document",
         object_id=str(id),
         relations=["can_read", "can_write", "can_delete", "can_share"],
+        batch=batch,
     )
 
     return PermissionsResponse(
